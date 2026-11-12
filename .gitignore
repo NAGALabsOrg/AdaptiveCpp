@@ -1,6 +1,8 @@
 # CMake out-of-source
 build*/
 *-build-*/
+# naga/build/ holds the pixi package's build scripts, not CMake output
+!naga/build/
 
 # vscode in-source configs
 .vscode/

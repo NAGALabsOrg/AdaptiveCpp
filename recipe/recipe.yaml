@@ -1,0 +1,152 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/prefix-dev/recipe-format/main/schema.json
+#
+# naga-acpp-local: LOCAL development build of this fork (linux-64 only). One
+# output, no stage cache, no package split: LLVM (AMD ROCm/llvm-project snapshot)
+# with AdaptiveCpp linked in, built by naga/build/build.nu. The AdaptiveCpp
+# source is this working tree. Nothing is published from here.
+# Reference for HOW: the acpp-toolchain repo (its recipe.yaml and shared/build-stage*.nu).
+
+context:
+  version: 0.dev0
+
+package:
+  name: naga-acpp-local
+  version: ${{ version }}
+
+source:
+  # This working tree. Untracked files are picked up (no git involved), but the
+  # pixi work dir lives inside .pixi, so it and .git must not be copied.
+  - path: ..
+    target_directory: AdaptiveCpp
+    filter:
+      exclude:
+        - ".git/**"
+        - ".pixi/**"
+        - "build/**"
+        - "build_*/**"
+  # AMD's llvm-project snapshot (linux-64 HIP lane). No sha256: GitHub commit
+  # archives are not byte-stable. Patches are relative to this recipe file.
+  # 0009/0011 are already in the tree. 0018 only matters with the ROCm backend
+  # but the set is kept whole so the tree matches the shipped toolchain.
+  - url: https://github.com/ROCm/llvm-project/archive/0bace1908348b840e6aa1b4b6e12151dae208158.tar.gz
+    target_directory: llvm-project
+    patches:
+      - ../naga/patches/0012-llvm23-dllexport-double-annotation.patch
+      - ../naga/patches/0013-llvm23-ompkinds-undef-helper-macros.patch
+      - ../naga/patches/0014-llvm23-instrumentor-include-vfs.patch
+      - ../naga/patches/0015-compiler-rt-eprintf-dont-define.patch
+      - ../naga/patches/0016-llvm23-amd-missing-llvm-abi.patch
+      - ../naga/patches/0017-compiler-rt-profile-wshadow.patch
+      - ../naga/patches/0018-llvm23-libllvm-comgr-libstdcxx-compat.patch
+      - ../naga/patches/0019-llvm23-openmp-ftn-upper-memspace.patch
+      - ../naga/patches/0020-SLP-limit-second-pass-to-register-VF.patch
+  - url: https://github.com/KhronosGroup/OpenCL-Headers/archive/265df85aec478d14a5c5880d7bb92d7dd52714ef.tar.gz
+    sha256: 07002bdb6107dfc8ab1736c3894ff7f1501029751960c0b2dd6157e43c0b9290
+    target_directory: OpenCL-Headers
+  - url: https://github.com/KhronosGroup/OpenCL-CLHPP/archive/67d100e70612341707725b6648ccca4c10b0dc31.tar.gz
+    sha256: a6112af8ba2cc8a5248bcc7399624258cb9609b31ccd4a65222bf61893c2c618
+    target_directory: OpenCL-CLHPP
+
+build:
+  script:
+    interpreter: nu
+    # rattler-build builds with a sanitized env: forward what ccache needs.
+    # Empty means "unset" (build.nu hides empty values).
+    env:
+      CCACHE_DIR: ${{ env.get("CCACHE_DIR", default="") }}
+      CCACHE_MAXSIZE: ${{ env.get("CCACHE_MAXSIZE", default="") }}
+      CCACHE_BASEDIR: ${{ env.get("CCACHE_BASEDIR", default="") }}
+      CCACHE_NOHASHDIR: ${{ env.get("CCACHE_NOHASHDIR", default="") }}
+      ACPP_BUILD_DIR: ${{ env.get("ACPP_BUILD_DIR", default="") }}
+    # Run in place so `source lib.nu` resolves beside build.nu.
+    content: |
+      ^nu ($env.SRC_DIR | path join AdaptiveCpp naga build build.nu)
+
+requirements:
+  build:
+    - ${{ compiler('c') }}
+    - ${{ compiler('cxx') }}
+    - ${{ stdlib('c') }}
+    # conda-forge's CUDA compiler activation (cuda-nvcc_linux-64). Its activate
+    # script points nvcc at the conda compiler (NVCC_PREPEND_FLAGS
+    # -ccbin=$CXX) and adds the targets/x86_64-linux dirs to CMAKE_FIND_ROOT_PATH
+    # for projects that use FindCUDAToolkit without the CUDA language. Without
+    # it nvcc looks for a system gcc, which must never be used.
+    - ${{ compiler('cuda') }}
+    - nushell
+    # A functional floor: the build does not configure below this.
+    - cmake >=3.24
+    - ninja
+    # x86-64 microarchitecture level 3 (conda-forge's documented pattern): its
+    # activation injects the -march flags into CFLAGS/CXXFLAGS, which
+    # outer-flag-args and write-build-cfg.nu forward; it also adds the
+    # __archspec lower bound to the run requirements.
+    - x86_64-microarch-level ==3
+    - ccache
+    # lldb python bindings: SWIG, and the single `python` variant key.
+    - python
+    - swig
+    # lldb tree-sitter highlighting: `tree-sitter generate` runs through node.
+    - tree-sitter-cli
+    - nodejs
+  host:
+    - zlib
+    - zstd
+    # The single CUDA pin (build variants).
+    - cuda-version ==${{ cuda_compiler_version }}
+    - cuda-cudart-dev
+    # libdevice.10.bc only. NOT the cuda-nvvm metapackage (it drags libnvvm.so,
+    # which acpp never loads).
+    - cuda-nvvm-tools
+    # Here so the fork's discovery sees the CUDA install tree the way
+    # conda-forge lays it out inside the prefix: the toolkit root, and from it
+    # the device bitcode under nvvm/libdevice. A shipped acpp toolchain must know
+    # that layout to find things at an app's runtime (ACPP_CUDA_ROOT=. records
+    # it prefix-relative). FindCUDAToolkit locates the toolkit through nvcc, so
+    # the host prefix carries one; the activation in build makes it usable.
+    - cuda-nvcc-tools
+    - cuda-driver-dev
+    - cuda-crt-dev_linux-64
+    - ocl-icd
+    - opencl-headers
+    - level-zero-devel
+    # lldb / LLVM optional features (FORCE_ON in build args).
+    - libxml2-devel
+    - python
+    - xz
+    - libedit
+    - ncurses
+    - libtree-sitter
+    - numactl
+    # SVML + its runtime (libsvml, libintlc) for the x86 host JIT: the fork's
+    # find_library(svml/intlc) must find them at configure time.
+    - intel-cmplr-lib-rt
+  run:
+    # Vendor dependencies directly (no naga-acpp-runtime-* metapackages).
+    # CUDA: the ceiling is required, libcudart's SONAME is major-versioned.
+    # The cuda-nvcc_linux-64 activation also run-exports cuda-version
+    # >=12.9,<13 (same range); kept explicit.
+    - cuda-version >=12.9,<13
+    - cuda-cudart
+    - cuda-nvvm-tools
+    # Level Zero loader; the GPU driver itself is the system's.
+    - level-zero
+    # OpenCL ICD loader, and the system's ICDs via /etc/OpenCL/vendors (the
+    # ocl-icd-system link script runs only with run-post-link-scripts=insecure,
+    # set in .pixi/config.toml).
+    - ocl-icd
+    - ocl-icd-system
+    - numactl
+    - libstdcxx >=13
+    - intel-cmplr-lib-rt
+    # The shipped clang cfg files point at the sysroot and gcc toolchain.
+    - sysroot_linux-64 >=2.28
+    - libgcc-devel_linux-64 14.*
+    # Bare clang's default linker is `ld` from PATH (no activation here).
+    - binutils_impl_linux-64
+    - libstdcxx-devel_linux-64 14.*
+
+about:
+  homepage: https://github.com/NAGALabsOrg/AdaptiveCpp
+  license: Apache-2.0 WITH LLVM-exception
+  summary: Local development build of the NAGA AdaptiveCpp fork (LLVM + AdaptiveCpp)
