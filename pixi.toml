@@ -34,6 +34,13 @@ experimental = true
 [dependencies]
 naga-acpp-local = { path = "." }
 nushell = ">=0.106"
+# Test suite (naga/tasks/test-*.nu): what CI's suite environments carry for linux-64.
+cmake = ">=3.24"
+ninja = "*"
+libboost-devel = "*"
+tbb-devel = "*"
+# GNU timeout, so a hung test executable is reported instead of blocking.
+coreutils = "*"
 
 [tasks.info]
 cmd = "acpp-info -l"
@@ -42,6 +49,39 @@ description = "What the installed runtime sees on this machine"
 [tasks.check-devices]
 cmd = "nu naga/tasks/check-devices.nu"
 description = "Fail unless acpp-info -l reports OpenMP, CUDA, OpenCL and Level Zero devices"
+
+[tasks.test-build]
+cmd = "nu naga/tasks/test-build.nu"
+description = "Build tests/ (rt, sycl, pstl, pcuda) against the installed env into .pixi/naga-tests"
+
+[tasks.test-omp]
+cmd = "nu naga/tasks/test-run.nu omp"
+depends-on = ["test-build"]
+description = "OpenMP: rt_tests, sycl_tests, pstl_tests, pcuda_tests"
+
+[tasks.test-cuda]
+cmd = "nu naga/tasks/test-run.nu cuda"
+depends-on = ["test-build"]
+description = "omp;cuda: sycl_tests"
+
+[tasks.test-ocl]
+cmd = "nu naga/tasks/test-run.nu ocl"
+depends-on = ["test-build"]
+description = "ocl: sycl_tests (Intel Graphics here)"
+
+[tasks.test-ze]
+cmd = "nu naga/tasks/test-run.nu ze"
+depends-on = ["test-build"]
+description = "ze (Level Zero): sycl_tests"
+
+[tasks.test-sanitizers]
+cmd = "nu naga/tasks/test-run.nu sanitizers"
+description = "Sanitizer smoke: address and thread link, run clean, and fire"
+
+[tasks.test]
+cmd = "nu naga/tasks/test-run.nu all"
+depends-on = ["test-build"]
+description = "Every cell, no stop at first failure; logs under ~/logs/acpp-fork/tests-<timestamp>/"
 
 # [dev] pulls the recipe's build and host closure without building the package.
 [feature.dev.dev]
