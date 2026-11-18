@@ -14,7 +14,7 @@ Naming conventions: operation names follow SYCL and the standard library where t
 | `free(handle)` | release |
 | `create_promise<T>()` giving `graph_promise<T>`; `.future()` giving `graph_future<T>` | host-only value passed between submissions |
 | `graph.submit(device, [&](auto gh) {...})` | exactly one piece of work |
-| `graph.loop(...)` | repetition spanning submissions |
+| `graph.cycle(...)` | graph cycle: repetition spanning submissions whose stop condition is only known while the graph runs |
 | `graph.run()`, `graph.wait()` | execute; block until done |
 | `graph.report()` | what was derived and chosen |
 

@@ -22,6 +22,7 @@ graph.run();
 - A submission is exactly one piece of work: a kernel (`define_kernel`), host work (`define_host_work`), or interop work.
 - `submit` creates host IR that is JIT compiled; the submit body is itself part of the compiled host program. "Submit runs at the call site" means only that the lambda is consumed at the call site, so capturing by reference is safe. It is the definition inside that is the off-loop work.
 - Nothing executes until `run`.
+- The graph is built at run time by ordinary host code, as a builder. A host `for` loop around `submit` is one kernel definition submitted many times.
 - The graph handler is also where per-submission properties would go; none are designed.
 
 ## 3. Memory handles
@@ -107,12 +108,15 @@ A host-only primitive of the graph, for a value host work computes that later su
 
 Users may interop with vendor libraries. Interop work is shaped like a host work submission, with interop handles that give access to native objects. It is not designed further yet.
 
-## 9. Loops
+## 9. Graph cycle
 
-A graph-level loop is repetition that spans submissions; a cycle is the form inside one kernel. As in the 2026-11-02 design:
+A cycle exists at two levels, and it is the same abstract primitive at both. The in-kernel cycle (`01-kernel-language.md`, section 10) repeats inside one launch. The graph cycle repeats a set of submissions. In CoSpan's terms the first is like an implicit component and the second like a solver over a system of components, but neither is tied to solving systems.
 
-- A loop is a composite node inside the one compiled graph, `for` or `while` with early exit. Its condition check is host work that sets a loop flag. The loop never blocks downstream work that does not depend on it.
+- The graph is built by ordinary host code, so repetition with a count the host already knows needs no primitive: it is a host loop that calls `submit`. The graph cycle is for repetition whose stop condition is only known while the graph runs.
+- A graph cycle is a composite node inside the one compiled graph. Its condition check is host work. The cycle never blocks downstream work that does not depend on it.
 - A composite has many events in and one event out; its roles on handles are the union of its inner nodes'. Composites nest.
+- **Conditional nodes.** What a graph cycle issues depends on a condition only known while the graph runs, so its nodes are conditional nodes, as designed on 2026-11-02. They exist every run, each gated by a flag, so taking a different path never recompiles. A conditional node that is skipped signals its event directly, so its dependents see a valid event either way. Flags are tagged per run. The gating mechanism is per backend.
+- Handles carried from one iteration to the next are runtime arguments, tracked at run time.
 - **Hard stop (default):** each next iteration waits for the condition, then continues or exits.
 - **Speculative (opt-in):** iterations keep being submitted while the condition is checked, up to a throttle. Iterations already in flight past the exit still complete.
 
@@ -145,7 +149,7 @@ This is the design as it stood, restated in the current vocabulary. It is the st
 - **Arrays in kernels.** The kernel gets an argument slot per array. The launch code fills it each run with the current device address of the bound handle. Moving memory never recompiles.
 - **Launch values** are placeholders in the kernel IR, resolved and validated by the host program before the launch.
 - **Host work** is JIT-compiled as part of the program and run with `std::async` for now, with a future behind a vendor-erased event. Interop work is the exception: a precompiled function the program calls.
-- **Loops** lower to a loop in the compiled host code.
+- **A graph cycle** lowers to a loop in the compiled host code, with its conditional nodes gated per backend.
 
 Flagged in 2026-11-02 and never worked out:
 
@@ -164,10 +168,11 @@ Flagged in 2026-11-02 and never worked out:
 | Device-sourced sizes through graph calls in host nodes | Host handles with `realloc`, and graph promise and future |
 | Host-evaluated calls | Set aside, as the requirement "IR primitives for libraries" |
 | Fusion | Set aside |
+| Loop composite | Graph cycle; the conditional node machinery stays |
 
 ## 15. Open for research or later discussion
 
-- Whether the 2026-11-02 machinery that split graph calls inside host nodes into conditional nodes is still needed, given that reallocation through a host handle only changes what the handle says its size is and devices allocate on use.
+- The exact form of a graph cycle's body and stop condition.
 - Whether a kernel's output ever needs its old contents brought to the device. An undecorated output is fully defined by its kernel; an `inplace` output is not.
 - What a host work submission takes in place of a device.
 - The design of interop work.
