@@ -11,6 +11,7 @@ Status: user-facing design agreed 2026-11-18. Implementation design (how a kerne
 | `01-kernel-language.md` | The kernel design language: what a kernel definition is, what each construct means, what the toolchain rejects, what the user can rely on. |
 | `02-graph-api.md` | The graph as the user sees it: submissions, memory handles, host work, ordering, plus the host IR design carried over from 2026-11-02. |
 | `03-vocabulary.md` | Every name the user can write, by level, with its meaning. |
+| `04-implementation-research.md` | Findings and proposals from the implementation research. Proposals, not decisions. |
 | `history/` | The 2026-11-02 graph API design and its discussion record, verbatim. Superseded record only: never a source of current decisions. |
 
 ## What we are building

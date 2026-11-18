@@ -176,4 +176,4 @@ Flagged in 2026-11-02 and never worked out:
 - Whether a kernel's output ever needs its old contents brought to the device. An undecorated output is fully defined by its kernel; an `inplace` output is not.
 - What a host work submission takes in place of a device.
 - The design of interop work.
-- Cross-graph ordering, an event returned by `run`, better host execution than `std::async`, vendor-native loop lowering: future work as in 2026-11-02.
+- Cross-graph ordering, an event returned by `run`, better host execution than `std::async`, vendor-native graph cycle lowering: future work as in 2026-11-02.
