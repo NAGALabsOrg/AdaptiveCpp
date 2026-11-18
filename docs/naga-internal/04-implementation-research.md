@@ -45,9 +45,9 @@ Lean: use the mechanisms of section 1 and add none. Launch values are specialise
 Findings (NVIDIA programming guide; Sorensen and others 2016 and 2021; Merrill and Garland 2016; Smith, Levien and Owens 2025; an AMD paper of 2020):
 
 - Work groups of one launch are not guaranteed to be resident together. A group that spins on a group not yet scheduled deadlocks. No cross-vendor specification guarantees progress between work groups.
-- The one model that held on every device tested is that a group which has started keeps running.
+- The weakest useful model is occupancy-bound execution: a group that has started keeps running. It is reported to hold on NVIDIA devices, is undocumented for Intel devices and for the CPU path, and is known not to hold on Apple devices, which are not a target.
 - CUDA's grid synchronisation needs a cooperative launch sized to what the device holds, fails if it does not fit, and has no OpenCL or SYCL equivalent.
-- Ticket ordering needs only the model that held: a group takes its ticket after it has started and waits only on lower tickets. Merrill and Garland give exactly this as their fix for deadlock.
+- Ticket ordering is safe under occupancy-bound execution: a group takes its ticket after it has started and waits only on lower tickets. Merrill and Garland give exactly this as their fix for deadlock. On our four backends that model is an assumption until experiment E1 proves it; a grid of one native group is the only setting that needs no progress assumption.
 - Decoupled fallback is the other portable answer: a group that finds a result missing computes it itself, and a compare-and-swap lets one copy publish. It needs the work to be recomputable from inputs, which our pure bodies are. It costs redundant work.
 - Residual hazard outside our control: a pre-empted kernel may resume with fewer resources.
 
