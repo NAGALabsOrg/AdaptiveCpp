@@ -62,6 +62,13 @@ def main [] {
     error make {msg: "compiler-rt runtimes are HOLLOW (no asan artifacts installed) - child configure evidence dumped above"}
   }
 
+  # Unversioned .so symlinks are dev-package files elsewhere in conda; the
+  # versioned sonames are what the runtime needs.
+  for f in [libLLVM.so libLTO.so libRemarks.so libclang.so libclang-cpp.so] {
+    let p = ($prefix | path join "lib" $f)
+    if ($p | path exists) { rm $p }
+  }
+
   # Clang config files (<triple>-clang{,++,-cpp}.cfg in bin/): bare clang then
   # finds --sysroot/-isystem/-L/-rpath with no activation script.
   ^nu ($env.FILE_PWD | path join "install-cfg.nu") (linux-triple)

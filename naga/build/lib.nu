@@ -69,6 +69,15 @@ def common-args [src: string, prefix: string, build: string] {
     "-DLLVM_INCLUDE_BENCHMARKS=OFF"
     "-DLLVM_INCLUDE_EXAMPLES=OFF"
     "-DLLVM_INCLUDE_TESTS=OFF"
+    # FileCheck, not, count and the other LLVM utilities are built (utils are on
+    # by default) but never installed unless asked: naga-acpp-llvm-dev ships
+    # them, as conda-forge's llvmdev does, for consumers' lit-based tests.
+    "-DLLVM_INSTALL_UTILS=ON"
+    # AMD's llvm-project and clang's driver CMake create bin/flang (a symlink to
+    # clang) and bin/amdflang when flang is not a built project. It is a Fortran
+    # driver name with no Fortran front end behind it, and it would collide
+    # with conda-forge's flang.
+    "-DCLANG_LINK_FLANG=OFF"
     "-DLLVM_ENABLE_ZLIB=FORCE_ON"
     "-DLLVM_ENABLE_ZSTD=FORCE_ON"
     # Optional LLVM / LLDB features: FORCE_ON (LLVM_ENABLE_*) / ON (LLDB_ENABLE_*)
