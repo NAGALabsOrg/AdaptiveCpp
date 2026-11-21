@@ -1,0 +1,90 @@
+# naga-acpp-tools: clang-tidy, clang-format, clangd, scan-build, BOLT and the other Clang tools.
+[package]
+name = "naga-acpp-tools"
+version = "0.dev0"
+description = "Clang tools (clang-tidy, clang-format, clangd, scan-build, BOLT) of the naga-acpp toolchain"
+homepage = "https://github.com/NAGALabsOrg/AdaptiveCpp"
+license = "Apache-2.0 WITH LLVM-exception"
+publish = true
+
+[package.build]
+backend = { name = "pixi-build-naga", version = "*" }
+
+[package.build.config]
+compilers = ["c", "cxx"]
+# Same-major windows: a project can keep its own different-major clang-format/clangd tooling.
+
+[package.build.config.slice]
+from = "naga-acpp-core"
+include = [
+  "bin/amdgpu-arch",
+  "bin/clang-apply-replacements",
+  "bin/clang-change-namespace",
+  "bin/clang-check",
+  "bin/clang-doc",
+  "bin/clang-extdef-mapping",
+  "bin/clang-format",
+  "bin/clang-include-cleaner",
+  "bin/clang-include-fixer",
+  "bin/clang-installapi",
+  "bin/clang-linker-wrapper",
+  "bin/clang-move",
+  "bin/clang-nvlink-wrapper",
+  "bin/clang-offload-bundler",
+  "bin/clang-offload-packager",
+  "bin/clang-query",
+  "bin/clang-refactor",
+  "bin/clang-reorder-fields",
+  "bin/clang-repl",
+  "bin/clang-scan-deps",
+  "bin/clang-sycl-linker",
+  "bin/clang-tidy",
+  "bin/clangd",
+  "bin/diagtool",
+  "bin/find-all-symbols",
+  "bin/git-clang-format",
+  "bin/hmaptool",
+  "bin/modularize",
+  "bin/nvptx-arch",
+  "bin/offload-arch",
+  "bin/pp-trace",
+  "bin/run-clang-tidy",
+  "bin/scan-build",
+  "bin/scan-build-py",
+  "bin/scan-view",
+  "bin/llvm-bolt",
+  "bin/llvm-bolt-heatmap",
+  "bin/perf2bolt",
+  "bin/merge-fdata",
+  "share/clang/**",
+  # clang-doc's templates (unclaimed by the shipped globs)
+  "share/clang-doc/**",
+  "share/scan-build/**",
+  "share/scan-view/**",
+  "share/opt-viewer/**",
+  "lib/libear/**",
+  "lib/libscanbuild/**",
+  "libexec/**",
+]
+
+[package.run-constraints]
+clang-tools = "<23.0a0|>=24.0a0"
+clang-format = "<23.0a0|>=24.0a0"
+clang-scan-deps = "<23.0a0|>=24.0a0"
+clang-format-23 = "<0.0a0"
+acpp-tools = "<0.0a0"
+acpp-tools-nightly = "<0.0a0"
+
+[package.build-dependencies]
+x86_64-microarch-level = "==3"
+
+[package.host-dependencies]
+naga-acpp-core = { workspace = true }
+naga-acpp-llvm = { workspace = true }
+zlib = "*"
+zstd = "*"
+
+[package.run-dependencies]
+naga-acpp-runtime = { path = "../runtime", version = "==0.dev0" }
+# the Python tools (run-clang-tidy, scan-build-py, git-clang-format, ...)
+python = ">=3.9"

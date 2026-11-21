@@ -1,0 +1,42 @@
+# naga-acpp-clangxx_linux-64: compiler activation for the naga-acpp clang++ (C++ side, plus the
+# SYCL environment). Rendered by ../render-install.nu.
+[package]
+name = "naga-acpp-clangxx_linux-64"
+version = "0.dev0"
+description = "Compiler activation for the naga-acpp clang++ (C++, SYCL)"
+homepage = "https://github.com/NAGALabsOrg/AdaptiveCpp"
+license = "BSD-3-Clause"
+publish = true
+
+[package.build]
+backend = { name = "pixi-build-naga", version = "*" }
+
+[package.build.source]
+path = ".."
+
+[package.build.config]
+script = "render-install.nu"
+extra-input-globs = ["vendor/**", "render-install.nu"]
+env = { ACTIVATION_SIDE = "clangxx" }
+
+[package.run-exports.strong]
+__glibc = ">=2.28"
+libgcc = ">=14"
+libstdcxx = ">=14"
+naga-acpp-runtime = { pin-compatible = { exact = true } }
+
+[package.run-constraints]
+"clangxx_linux-64" = "<0.0a0"
+"acpp-clangxx_linux-64" = "<0.0a0"
+"acpp-clangxx-nightly_linux-64" = "<0.0a0"
+
+[package.build-dependencies]
+coreutils = "*"
+
+[package.host-dependencies]
+naga-acpp = { path = "../../slices/naga-acpp" }
+naga-acpp-runtime = { path = "../../slices/runtime" }
+naga-acpp-clang_linux-64 = { path = "../clang" }
+
+[package.run-dependencies]
+naga-acpp-clang_linux-64 = { pin-compatible = { exact = true } }

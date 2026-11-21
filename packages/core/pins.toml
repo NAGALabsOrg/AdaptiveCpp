@@ -1,0 +1,37 @@
+# Source pins for the core build: one table per tree build-stage expects under its
+# source dir. fetch-sources.nu fetches and patches a tree once, and again only
+# when its url, sha256 or patch set changes. Reference: acpp-toolchain
+# recipe.yaml, staging output `source` (linux-64).
+#
+# `patches` are files under packages/core/patches/, applied in order with -p1.
+# No sha256 on llvm-project: GitHub commit archives are not byte-stable; the URL
+# pins the commit and a bad download fails to extract.
+
+[llvm-project]
+url = "https://github.com/ROCm/llvm-project/archive/0bace1908348b840e6aa1b4b6e12151dae208158.tar.gz"
+patches = [
+  "0012-llvm23-dllexport-double-annotation.patch",
+  "0013-llvm23-ompkinds-undef-helper-macros.patch",
+  "0014-llvm23-instrumentor-include-vfs.patch",
+  "0015-compiler-rt-eprintf-dont-define.patch",
+  "0016-llvm23-amd-missing-llvm-abi.patch",
+  "0017-compiler-rt-profile-wshadow.patch",
+  "0018-llvm23-libllvm-comgr-libstdcxx-compat.patch",
+  "0019-llvm23-openmp-ftn-upper-memspace.patch",
+  "0020-SLP-limit-second-pass-to-register-VF.patch",
+]
+
+[OpenCL-Headers]
+url = "https://github.com/KhronosGroup/OpenCL-Headers/archive/265df85aec478d14a5c5880d7bb92d7dd52714ef.tar.gz"
+sha256 = "07002bdb6107dfc8ab1736c3894ff7f1501029751960c0b2dd6157e43c0b9290"
+
+[OpenCL-CLHPP]
+url = "https://github.com/KhronosGroup/OpenCL-CLHPP/archive/67d100e70612341707725b6648ccca4c10b0dc31.tar.gz"
+sha256 = "a6112af8ba2cc8a5248bcc7399624258cb9609b31ccd4a65222bf61893c2c618"
+
+# TheRock multi-arch nightly 10.1.0a20260822: the ROCm build input and the source
+# of the runtime subset deployed into the prefix. AMD publishes no checksum
+# sidecar; the sha256 was computed from a direct download.
+[rocm-dist]
+url = "https://rocm.nightlies.amd.com/tarball-multi-arch/therock-dist-linux-multiarch-10.1.0a20260822.tar.gz"
+sha256 = "4a3f211ea2da8c2f566b93d6b3b0d155b7f3c7b63d628e95d854e6c9eb55debb"

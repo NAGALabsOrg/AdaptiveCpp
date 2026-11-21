@@ -1,33 +1,47 @@
 #!/usr/bin/env nu
 # write-build-cfg.nu: clang config files for the FRESHLY BUILT clang, in the
-# build tree's bin dir (<build>/bin), so every host-side invocation of the
-# bootstrapped clang gets the isolation conda's compiler activation gives the
+# BUILD tree's bin dir (<build>/bin), so every host-side invocation of the
+# bootstrapped clang gets the isolation the conda compiler activation gives the
 # outer compiler: sysroot, gcc toolchain and the activation flags.
 #
-# The LLVM_ENABLE_RUNTIMES child (compiler-rt, libomp) is a SEPARATE cmake driven
-# by <build>/bin/clang; build.nu strips CFLAGS/CXXFLAGS/CPPFLAGS from the env,
-# so the child only gets what RUNTIMES_CMAKE_ARGS hands it. A cfg file next to
-# the clang follows EVERY invocation. Clang loads <triple>-<driver>.cfg from its
-# own directory; we write <T>-clang.cfg, <T>-clang++.cfg, <T>-clang-cpp.cfg and
-# NEVER a plain clang.cfg: device-target invocations (spir64, nvptx64) must not
-# load anything. Absolute paths only, one option per line. Not the install-time
-# install-cfg.nu (that writes the relocatable files shipped in $PREFIX/bin).
+# Derived from acpp-toolchain's shared/write-build-cfg.nu, reduced to linux-64
+# (DEVIATION: windows and macOS branches removed) plus the i386 cfgs below.
+#
+# Why: the LLVM_ENABLE_RUNTIMES child (compiler-rt, libomp) is a SEPARATE cmake
+# driven by <build>/bin/clang, and ninja-spawned configures never see the outer
+# flags. build-linux.nu strips CFLAGS/CXXFLAGS/CPPFLAGS from the env, so the
+# child only gets what RUNTIMES_CMAKE_ARGS hands it. A cfg file next to the clang
+# follows EVERY invocation, whatever configures it.
+#
+# Mechanism (clang docs, "Configuration files"): for the driver mode of the
+# invoked name clang loads <triple>-<driver>.cfg from its own directory, where
+# <triple> is the effective target. We write <T>-clang.cfg (C), <T>-clang++.cfg
+# (C++), <T>-clang-cpp.cfg (preprocessor), and NEVER a plain clang.cfg /
+# <arch>.cfg: device-target invocations (spir64, nvptx64, amdgcn) must not load anything.
+#
+# Runs BEFORE build-linux.nu strips the activation env. Absolute paths only, one
+# option per line. Not the install-time activation/install-cfg.nu (that one
+# writes the relocatable <CFGDIR>-relative files shipped in $PREFIX/bin).
 #
 # Usage: nu write-build-cfg.nu <build-dir>
 
-source lib.nu
+source build-lib.nu
 
-# Flag units never written: gcc-only, clang ignores it with
-# -Wignored-optimization-argument on every compile.
-const DROP_UNITS = ["-fno-merge-constants"]
+# Flag units never written: gcc-only; clang parses it and ignores it, printing
+# -Wignored-optimization-argument on every single compile.
+const DROP_UNITS = [
+  "-fno-merge-constants"
+]
 
 # Options whose argument is a separate word; the pair stays on one cfg line.
-const TWO_WORD_OPTIONS = ["-isystem" "-I" "-L" "-include" "-iquote" "-idirafter" "-isysroot" "-stdlib++-isystem"]
+const TWO_WORD_OPTIONS = ["-isystem" "-I" "-L" "-include" "-iquote" "-idirafter" "-isysroot" "-stdlib++-isystem" "/I" "/imsvc" "-imsvc" "/external:I"]
 
+# An environment variable as a string; unset -> "".
 def env-or-empty [name: string] {
   $env | get -o $name | default "" | into string
 }
 
+# Split a flag string into units, one per cfg line.
 def flag-units [flags: string] {
   let words = ($flags | split row -r '\s+' | where {|w| $w != "" })
   mut out = []
@@ -45,10 +59,12 @@ def flag-units [flags: string] {
   $out
 }
 
+# Drop the units clang rejects or warns about; remove duplicates, keep order.
 def keep-units [units: list<string>] {
   $units | where {|u| not ($u in $DROP_UNITS) } | uniq
 }
 
+# Write one cfg file; returns the path.
 def write-cfg [bin: string, triple: string, driver: string, header: string, lines: list<string>] {
   let path = ($bin | path join $"($triple)-($driver).cfg")
   ([$header] ++ $lines | str join "\n") + "\n" | save --force $path
@@ -56,8 +72,7 @@ def write-cfg [bin: string, triple: string, driver: string, header: string, line
 }
 
 # Same sysroot choice as conda-toolchain-args: CONDA_BUILD_SYSROOT, else the
-# conda layout under BUILD_PREFIX. --sysroot finds the C library headers,
-# --gcc-toolchain the libstdc++ headers.
+# conda layout under BUILD_PREFIX.
 def linux-cfgs [bin: string] {
   let triple = (linux-triple)
   let bp = (env-or-empty BUILD_PREFIX)
@@ -84,19 +99,17 @@ def linux-cfgs [bin: string] {
   let cxx_lines = $iso ++ (keep-units ((flag-units $cxxflags) ++ (flag-units $cppflags))) ++ $ld
   let cpp_lines = $iso ++ (keep-units (flag-units $cppflags))
 
-  # The runtimes COMPILER_TARGET and LLVM_DEFAULT_TARGET_TRIPLE / LLVM_HOST_TRIPLE
-  # (lib.nu linux-args) are all (linux-triple): one spelling.
-  [$triple] | uniq | each {|t|
-    let note = $"# Build-tree clang config for ($t), written by naga/build/write-build-cfg.nu. Not shipped."
-    [
-      {path: (write-cfg $bin $t "clang" $"($note) C driver." $c_lines), token: $sysroot}
-      {path: (write-cfg $bin $t "clang++" $"($note) C++ driver." $cxx_lines), token: $sysroot}
-      {path: (write-cfg $bin $t "clang-cpp" $"($note) Preprocessor driver." $cpp_lines), token: $sysroot}
-    ]
-  } | flatten
+  let note = $"# Build-tree clang config for ($triple), written by write-build-cfg.nu. Not shipped."
+  [
+    {path: (write-cfg $bin $triple "clang" $"($note) C driver." $c_lines), token: $sysroot}
+    {path: (write-cfg $bin $triple "clang++" $"($note) C++ driver." $cxx_lines), token: $sysroot}
+    {path: (write-cfg $bin $triple "clang-cpp" $"($note) Preprocessor driver." $cpp_lines), token: $sysroot}
+  ]
+  # DEVIATION (fork fix, handoff.md 24-31): i386 cfgs, see i386-cfgs below.
   | append (i386-cfgs $bin $iso $sysroot)
 }
 
+# DEVIATION (fork fix, handoff.md 24-31; from the fork's former naga/build/write-build-cfg.nu).
 # -m32 changes the effective triple to i386-conda-linux-gnu (compiler-rt probes and
 # builds an i386 variant). Without a cfg for that triple the just-built clang
 # searches the system, which must never be used. Only the isolation lines: with
@@ -104,7 +117,7 @@ def linux-cfgs [bin: string] {
 # toolchain (it has no 32-bit glibc, so i386 is dropped, as on CI).
 def i386-cfgs [bin: string, iso: list<string>, sysroot: string] {
   let t = "i386-conda-linux-gnu"
-  let note = $"# Build-tree clang config for ($t), written by naga/build/write-build-cfg.nu. Not shipped. Isolation only."
+  let note = $"# Build-tree clang config for ($t), written by write-build-cfg.nu. Not shipped. Isolation only."
   [
     {path: (write-cfg $bin $t "clang" $"($note) C driver." $iso), token: $sysroot}
     {path: (write-cfg $bin $t "clang++" $"($note) C++ driver." $iso), token: $sysroot}
@@ -118,6 +131,7 @@ def main [build: string] {
 
   let written = (linux-cfgs $bin)
 
+  # Fail fast: every expected file exists and carries its sysroot token.
   for w in $written {
     if not ($w.path | path exists) { error make {msg: $"write-build-cfg: expected ($w.path) was not written"} }
     if ($w.token != "") and not (open --raw $w.path | str contains $w.token) {

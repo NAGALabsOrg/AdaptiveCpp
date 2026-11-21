@@ -1,0 +1,18 @@
+# Export round trip: a compiled consumer that host-depends ONLY on naga-acpp. Its built `depends` must
+# carry naga-acpp-runtime ==0.dev0 and naga-acpp-llvm ==23.0git from naga-acpp's strong run exports.
+# Unpublished; used by naga/tasks/check-packages.nu.
+[package]
+name = "naga-acpp-check-consumer"
+version = "0.dev0"
+publish = false
+
+[package.build]
+backend = { name = "pixi-build-naga", version = "*" }
+
+[package.build.config]
+compilers = ["c", "cxx"]
+script = "build.nu"
+extra-input-globs = ["hello.cpp", "build.nu"]
+
+[package.host-dependencies]
+naga-acpp = { path = "../../slices/naga-acpp" }

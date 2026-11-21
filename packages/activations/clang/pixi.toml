@@ -1,0 +1,48 @@
+# naga-acpp-clang_linux-64: conda-style compiler activation for the naga-acpp clang (C side).
+# Rendered by ../render-install.nu from the vendored ctng-compiler-activation templates.
+[package]
+name = "naga-acpp-clang_linux-64"
+version = "0.dev0"
+description = "Compiler activation for the naga-acpp clang (C)"
+homepage = "https://github.com/NAGALabsOrg/AdaptiveCpp"
+license = "BSD-3-Clause"
+publish = true
+
+[package.build]
+backend = { name = "pixi-build-naga", version = "*" }
+
+[package.build.source]
+path = ".."
+
+[package.build.config]
+script = "render-install.nu"
+extra-input-globs = ["vendor/**", "render-install.nu"]
+env = { ACTIVATION_SIDE = "clang" }
+
+[package.run-exports.strong]
+__glibc = ">=2.28"
+# runtime floor = the gcc major the toolchain is built with
+libgcc = ">=14"
+naga-acpp-runtime = { pin-compatible = { exact = true } }
+
+# DELIBERATELY BLANKET: two packages both owning CC/CXX/AR in activate.d fight regardless of
+# which LLVM they point at.
+[package.run-constraints]
+"clang_linux-64" = "<0.0a0"
+"acpp-clang_linux-64" = "<0.0a0"
+"acpp-clang-nightly_linux-64" = "<0.0a0"
+
+[package.build-dependencies]
+coreutils = "*"
+
+[package.host-dependencies]
+naga-acpp = { path = "../../slices/naga-acpp" }
+naga-acpp-runtime = { path = "../../slices/runtime" }
+
+[package.run-dependencies]
+naga-acpp = { pin-compatible = { exact = true } }
+# the activation sets the -march flags for user code
+x86_64-microarch-level = "==3"
+sysroot_linux-64 = ">=2.28"
+# the activation names AR, RANLIB, NM, STRIP, LD as ${CHOST}-<tool>: binutils programs
+binutils_linux-64 = "*"

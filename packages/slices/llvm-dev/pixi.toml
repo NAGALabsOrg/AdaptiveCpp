@@ -1,0 +1,160 @@
+# naga-acpp-llvm-dev: LLVM/Clang development files: static libraries, headers, CMake configs,
+# llvm-config and the LLVM utilities (FileCheck, not, count, ...). The unsliced catch-all of the
+# core's bin/, include/ and lib/: everything another package carries is excluded below.
+[package]
+name = "naga-acpp-llvm-dev"
+version = "0.dev0"
+description = "LLVM/Clang development files of the naga-acpp toolchain"
+homepage = "https://github.com/NAGALabsOrg/AdaptiveCpp"
+license = "Apache-2.0 WITH LLVM-exception"
+publish = true
+
+[package.build]
+backend = { name = "pixi-build-naga", version = "*" }
+
+[package.build.config]
+compilers = ["c", "cxx"]
+
+[package.build.config.slice]
+from = "naga-acpp-core"
+include = [
+  "bin/**",
+  "include/**",
+  "lib/**/*.a",
+  "lib/cmake/**",
+  "share/man/**",
+  # the pinned llvm-spirv translator's development files (its binary stays in the runtime)
+  "lib/hipSYCL/ext/llvm-spirv/lib/**",
+  "lib/hipSYCL/ext/llvm-spirv/include/**",
+]
+exclude = [
+  # the bundled OpenCL-Headers/OpenCL-CLHPP are deliberately unshipped: conda-forge's
+  # opencl-headers/clhpp own these paths
+  "include/CL/**",
+  # claimed by naga-acpp
+  "lib/clang/**",
+  "bin/*-clang.cfg",
+  "bin/*-clang++.cfg",
+  "bin/*-clang-cpp.cfg",
+  "bin/acpp*",
+  "bin/clang",
+  "bin/clang++",
+  "bin/clang-cl",
+  "bin/clang-cpp",
+  "bin/clang-23",
+  "bin/lld",
+  "bin/ld.lld",
+  "bin/ld64.lld",
+  "bin/lld-link",
+  "bin/wasm-ld",
+  "bin/llvm-ar",
+  "bin/llvm-nm",
+  "bin/llvm-ranlib",
+  "bin/llvm-strip",
+  "bin/llvm-objcopy",
+  "bin/llvm-objdump",
+  "bin/llvm-readelf",
+  "bin/llvm-readobj",
+  "bin/llvm-size",
+  "bin/llvm-strings",
+  "bin/llvm-symbolizer",
+  "bin/llvm-cxxfilt",
+  "bin/llvm-addr2line",
+  "bin/llvm-dwarfdump",
+  "bin/llvm-dlltool",
+  "bin/llvm-lib",
+  "bin/llvm-rc",
+  "bin/llvm-mt",
+  "bin/llvm-windres",
+  "bin/llvm-cov",
+  "bin/llvm-profdata",
+  "bin/llvm-profgen",
+  "include/AdaptiveCpp/**",
+  "lib/cmake/AdaptiveCpp/**",
+  "bin/syclcc",
+  "bin/syclcc-clang",
+  "bin/amdllvm",
+  "bin/amdclang",
+  "bin/amdclang++",
+  "bin/amdclang-cl",
+  "bin/amdclang-cpp",
+  "bin/amdclang-23",
+  "bin/amdlld",
+  "bin/hipSYCL/**",
+  # claimed by naga-acpp-runtime-rocm
+  "lib/rocm_sysdeps/**",
+  # claimed by naga-acpp-tools
+  "bin/amdgpu-arch",
+  "bin/clang-apply-replacements",
+  "bin/clang-change-namespace",
+  "bin/clang-check",
+  "bin/clang-doc",
+  "bin/clang-extdef-mapping",
+  "bin/clang-format",
+  "bin/clang-include-cleaner",
+  "bin/clang-include-fixer",
+  "bin/clang-installapi",
+  "bin/clang-linker-wrapper",
+  "bin/clang-move",
+  "bin/clang-nvlink-wrapper",
+  "bin/clang-offload-bundler",
+  "bin/clang-offload-packager",
+  "bin/clang-query",
+  "bin/clang-refactor",
+  "bin/clang-reorder-fields",
+  "bin/clang-repl",
+  "bin/clang-scan-deps",
+  "bin/clang-sycl-linker",
+  "bin/clang-tidy",
+  "bin/clangd",
+  "bin/diagtool",
+  "bin/find-all-symbols",
+  "bin/git-clang-format",
+  "bin/hmaptool",
+  "bin/modularize",
+  "bin/nvptx-arch",
+  "bin/offload-arch",
+  "bin/pp-trace",
+  "bin/run-clang-tidy",
+  "bin/scan-build",
+  "bin/scan-build-py",
+  "bin/scan-view",
+  "bin/llvm-bolt",
+  "bin/llvm-bolt-heatmap",
+  "bin/perf2bolt",
+  "bin/merge-fdata",
+  # claimed by naga-acpp-lldb
+  "bin/lldb*",
+  # claimed by naga-acpp-runtime
+  "bin/opt",
+  "bin/llc",
+]
+
+[package.run-constraints]
+llvmdev = "<23.0a0|>=24.0a0"
+clangdev = "<23.0a0|>=24.0a0"
+llvm-tools = "<23.0a0|>=24.0a0"
+acpp-llvm-dev = "<0.0a0"
+acpp-llvm-dev-nightly = "<0.0a0"
+
+[package.build-dependencies]
+x86_64-microarch-level = "==3"
+
+[package.host-dependencies]
+naga-acpp-core = { workspace = true }
+naga-acpp-llvm = { workspace = true }
+zlib = "*"
+zstd = "*"
+
+[package.run-dependencies]
+naga-acpp-runtime = { path = "../runtime", version = "==0.dev0" }
+# ClangConfig.cmake imports every target of Clang's export set and CMake checks at find_package time
+# that their files exist: the driver binaries are in naga-acpp, the other clang tools in naga-acpp-tools
+naga-acpp = { path = "../naga-acpp", version = "==0.dev0" }
+naga-acpp-tools = { path = "../tools", version = "==0.dev0" }
+# what the installed LLVMConfig.cmake records as enabled, so a consumer's find_package succeeds
+# (FFI, CURL, httplib and the DIA SDK are recorded OFF)
+zlib = "*"
+zstd = "*"
+libxml2-devel = "*"
+libedit = "*"

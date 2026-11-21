@@ -1,0 +1,77 @@
+# naga-acpp-core: the one LLVM + AdaptiveCpp build the toolchain packages are carved
+# from (linux-64). Unpublished. The build is acpp-toolchain's staging build
+# (shared/build-stage*.nu, copied beside this file) driven by pixi-build-naga
+# in script mode; the source dir is the repo root. Requirements are the staging
+# output's linux-64 build and host lists (acpp-toolchain recipe.yaml 149-325);
+# versions come from the workspace build-variants, as the toolchain's variant
+# file does.
+[package]
+name = "naga-acpp-core"
+version = "0.dev0"
+publish = false
+
+[package.build]
+backend = { name = "pixi-build-naga", version = "*" }
+
+[package.build.source]
+path = "../.."
+
+[package.build.config]
+# compiler('cuda') is a fork fix on top of the shipped staging build (handoff.md 24-31).
+compilers = ["c", "cxx", "cuda"]
+build-dir = ".build"
+# What the build reads; never packages/ outside core, naga/, tests/, doc/, docs/,
+# .pixi/, .git/, .ck/, .build/, handoff.md, recipe/. The build-dir negation is added
+# by the backend.
+extra-input-globs = [
+  "CMakeLists.txt",
+  "LICENSE",
+  "bin/**",
+  "cmake/**",
+  "config/**",
+  "include/**",
+  "src/**",
+  "packages/core/**",
+]
+
+[package.build.target.linux-64.config]
+script = "packages/core/build-linux.nu"
+
+[package.build-dependencies]
+cmake = ">=3.24"
+ninja = "*"
+x86_64-microarch-level = "==3"
+ccache = "*"
+python = "*"
+swig = "*"
+tree-sitter-cli = "*"
+nodejs = "*"
+# Source cache (packages/core/fetch-sources.nu), not in the shipped staging list:
+# download, checksum, extract and patch.
+curl = "*"
+tar = "*"
+gzip = "*"
+patch = "*"
+coreutils = "*"
+
+[package.host-dependencies]
+naga-acpp-llvm = { workspace = true }
+zlib = "*"
+zstd = "*"
+cuda-version = "==12.9"
+cuda-cudart-dev = "*"
+cuda-nvvm-tools = "*"
+cuda-nvcc-tools = "*"
+cuda-driver-dev = "*"
+ocl-icd = "*"
+cuda-crt-dev_linux-64 = "*"
+level-zero-devel = "*"
+opencl-headers = "*"
+libxml2-devel = "*"
+python = "*"
+xz = "*"
+libedit = "*"
+ncurses = "*"
+libtree-sitter = "*"
+numactl = "*"
+intel-cmplr-lib-rt = "*"

@@ -4,7 +4,7 @@ channels = ["https://prefix.dev/jackm97/naga-labs"]
 # The target: glibc lives here (not as c_stdlib_version), cuda is the driver.
 platforms = [{ name = "naga-linux-64", platform = "linux-64", glibc = "2.28", cuda = "12.9", archspec = "x86_64_v3" }]
 preview = ["pixi-build"]
-requires-pixi = ">=0.84.1"
+requires-pixi = ">=0.84.2"
 
 [workspace.build-variants]
 c_compiler_version = ["14"]
@@ -23,16 +23,44 @@ numactl = ["2.0"]
 level-zero-devel = ["1.29"]
 level-zero = ["1.29"]
 
-[package.build.backend]
-name = "pixi-build-rattler-build"
-version = ">=0.4.8,<0.5"
-channels = ["https://prefix.dev/pixi-build-backends", "https://prefix.dev/conda-forge"]
+[workspace.dependencies]
+naga-acpp-core = { path = "packages/core" }
+naga-acpp-llvm = { path = "packages/extras/mutex" }
+naga-acpp-runtime-cuda = { path = "packages/extras/runtime-cuda" }
+naga-acpp-runtime-level-zero = { path = "packages/extras/runtime-level-zero" }
+naga-acpp-runtime-ocl = { path = "packages/extras/runtime-ocl" }
+naga-acpp-runtime-rocm = { path = "packages/extras/runtime-rocm" }
+naga-acpp-clangxx_linux-64 = { path = "packages/activations/clangxx" }
+naga-acpp = { path = "packages/slices/naga-acpp" }
+naga-acpp-llvm-dev = { path = "packages/slices/llvm-dev" }
+naga-acpp-check-consumer = { path = "packages/checks/consumer" }
 
-[package.build.config]
-experimental = true
+# The toolchain meta package: the six slices. Not the activations, not the vendor packages.
+[package]
+name = "naga-acpp-toolchain"
+version = "0.dev0"
+description = "AdaptiveCpp SYCL toolchain (LLVM 23, generic SSCP): compiler, runtime, compiler-rt, LLVM development files, tools, lldb"
+homepage = "https://github.com/NAGALabsOrg/AdaptiveCpp"
+license = "Apache-2.0 WITH LLVM-exception"
+publish = true
+
+[package.build]
+backend = { name = "pixi-build-naga", version = "*" }
+
+[package.run-dependencies]
+naga-acpp-runtime = { path = "packages/slices/runtime", version = "==0.dev0" }
+naga-acpp = { path = "packages/slices/naga-acpp", version = "==0.dev0" }
+naga-acpp-compiler-rt = { path = "packages/slices/compiler-rt", version = "==0.dev0" }
+naga-acpp-llvm-dev = { path = "packages/slices/llvm-dev", version = "==0.dev0" }
+naga-acpp-tools = { path = "packages/slices/tools", version = "==0.dev0" }
+naga-acpp-lldb = { path = "packages/slices/lldb", version = "==0.dev0" }
 
 [dependencies]
-naga-acpp-local = { path = "." }
+naga-acpp-toolchain = { path = "." }
+naga-acpp-runtime-cuda = { workspace = true }
+naga-acpp-runtime-level-zero = { workspace = true }
+naga-acpp-runtime-ocl = { workspace = true }
+naga-acpp-runtime-rocm = { workspace = true }
 nushell = ">=0.106"
 # Test suite (naga/tasks/test-*.nu): what CI's suite environments carry for linux-64.
 cmake = ">=3.24"
@@ -83,9 +111,13 @@ cmd = "nu naga/tasks/test-run.nu all"
 depends-on = ["test-build"]
 description = "Every cell, no stop at first failure; logs under ~/logs/acpp-fork/tests-<timestamp>/"
 
-# [dev] pulls the recipe's build and host closure without building the package.
+[tasks.check-packages]
+cmd = "nu naga/tasks/check-packages.nu"
+description = "Unit checks of the sliced package set: partition, contents, dependencies, linking, activation, bare toolchain, export round trip, name collisions"
+
+# [dev] pulls the core's build and host closure without building the package.
 [feature.dev.dev]
-naga-acpp-local = { path = "." }
+naga-acpp-core = { path = "packages/core" }
 
 [feature.dev.dependencies]
 nushell = ">=0.106"
@@ -94,6 +126,23 @@ ripgrep = "*"
 fd-find = "*"
 gdb = "*"
 rattler-build = ">=0.72"
+
+# Scratch environments of check-packages: the activation alone, and the bare toolchain alone.
+[feature.check-activation.dependencies]
+naga-acpp-clangxx_linux-64 = { workspace = true }
+bash = "*"
+
+[feature.check-bare.dependencies]
+naga-acpp-toolchain = { path = "." }
+bash = "*"
+
+[feature.check-llvm-dev.dependencies]
+naga-acpp-llvm-dev = { workspace = true }
+cmake = ">=3.24"
+ninja = "*"
+
+[feature.check-consumer.dependencies]
+naga-acpp-check-consumer = { workspace = true }
 
 [feature.git.dependencies]
 git = "*"
@@ -105,3 +154,7 @@ setup-git = "git config core.hooksPath .project/hooks"
 [environments]
 dev = { features = ["dev"], no-default-feature = true }
 git = { features = ["git"], no-default-feature = true }
+check-activation = { features = ["check-activation"], no-default-feature = true }
+check-bare = { features = ["check-bare"], no-default-feature = true }
+check-consumer = { features = ["check-consumer"], no-default-feature = true }
+check-llvm-dev = { features = ["check-llvm-dev"], no-default-feature = true }

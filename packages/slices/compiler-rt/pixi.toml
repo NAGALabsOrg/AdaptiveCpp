@@ -1,0 +1,37 @@
+# naga-acpp-compiler-rt: the sanitizer/profile runtimes (lib/clang/23/lib, lib/clang/23/share).
+# Carved from naga-acpp-core; hangs off naga-acpp like conda-forge's compiler-rt hangs off clang.
+[package]
+name = "naga-acpp-compiler-rt"
+version = "0.dev0"
+description = "compiler-rt runtimes (sanitizers, profile, libFuzzer) of the naga-acpp toolchain"
+homepage = "https://github.com/NAGALabsOrg/AdaptiveCpp"
+license = "Apache-2.0 WITH LLVM-exception"
+publish = true
+
+[package.build]
+backend = { name = "pixi-build-naga", version = "*" }
+
+[package.build.config]
+compilers = ["c", "cxx"]
+# conda-forge's compiler-rt of OUR major installs into the same lib/clang/<major>/lib path:
+# a genuine file collision, not just a version disagreement.
+
+[package.build.config.slice]
+from = "naga-acpp-core"
+include = ["lib/clang/23/lib/**", "lib/clang/23/share/**"]
+
+[package.run-constraints]
+compiler-rt = "<23.0a0|>=24.0a0"
+compiler-rt_linux-64 = "<23.0a0|>=24.0a0"
+acpp-compiler-rt = "<0.0a0"
+acpp-compiler-rt-nightly = "<0.0a0"
+
+[package.build-dependencies]
+x86_64-microarch-level = "==3"
+
+[package.host-dependencies]
+naga-acpp-core = { workspace = true }
+naga-acpp-llvm = { workspace = true }
+
+[package.run-dependencies]
+naga-acpp = { path = "../naga-acpp", version = "==0.dev0" }

@@ -1,0 +1,51 @@
+# naga-acpp-runtime-rocm: the HIP backend plugin and its JIT library, plus the TheRock runtime
+# subset deployed by the core build (real files, not dependencies: conda-forge's ROCm is
+# generations behind the LLVM this toolchain needs). Nothing from TheRock's lib/llvm ships here:
+# libamd_comgr NEEDs libLLVM.so.23.0git and libclang-cpp.so.23.0git and binds to OUR copies
+# in naga-acpp-runtime.
+[package]
+name = "naga-acpp-runtime-rocm"
+version = "0.dev0"
+description = "acpp SYCL runtime with ROCm backend runtime (TheRock subset)"
+homepage = "https://github.com/NAGALabsOrg/AdaptiveCpp"
+# HIP runtime, hiprtc and rocprofiler-register are MIT, hsa-runtime64 (ROCR) is NCSA, amd_comgr
+# and the amdgcn device libraries are Apache-2.0 WITH LLVM-exception. The four texts are under
+# packages/core/licenses/rocm/.
+license = "MIT AND NCSA AND Apache-2.0 WITH LLVM-exception"
+publish = true
+
+[package.build]
+backend = { name = "pixi-build-naga", version = "*" }
+
+[package.build.config]
+compilers = ["c", "cxx"]
+
+[package.build.config.slice]
+from = "naga-acpp-core"
+include = [
+  "lib/hipSYCL/librt-backend-hip*",
+  "lib/hipSYCL/llvm-to-backend/libllvm-to-amdgpu*",
+  "lib/libamdhip64*",
+  "lib/libhiprtc*",
+  "lib/libhsa-runtime64*",
+  "lib/libamd_comgr*",
+  "lib/librocm_kpack*",
+  "lib/librocprofiler-register*",
+  "lib/rocm_sysdeps/**",
+  "lib/llvm/amdgcn/bitcode/**",
+  "bin/hipSYCL/llvm-to-backend/llvm-to-amdgpu*",
+]
+
+[package.run-constraints]
+acpp-runtime-rocm = "<0.0a0"
+acpp-runtime-rocm-nightly = "<0.0a0"
+
+[package.build-dependencies]
+x86_64-microarch-level = "==3"
+
+[package.host-dependencies]
+naga-acpp-core = { workspace = true }
+naga-acpp-llvm = { workspace = true }
+
+[package.run-dependencies]
+naga-acpp-runtime = { path = "../../slices/runtime", version = "==0.dev0" }

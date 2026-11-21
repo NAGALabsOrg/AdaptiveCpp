@@ -1,0 +1,44 @@
+# naga-acpp-runtime-cuda: the CUDA backend plugin, the PTX JIT library and tool.
+# No activation: the runtime finds libdevice through its runtime-relative CUDA root (ACPP_CUDA_ROOT=.).
+[package]
+name = "naga-acpp-runtime-cuda"
+version = "0.dev0"
+description = "acpp SYCL runtime with CUDA backend dependencies (generic SSCP JIT)"
+homepage = "https://github.com/NAGALabsOrg/AdaptiveCpp"
+license = "BSD-3-Clause"
+publish = true
+
+[package.build]
+backend = { name = "pixi-build-naga", version = "*" }
+
+[package.build.config]
+compilers = ["c", "cxx"]
+
+[package.build.config.slice]
+from = "naga-acpp-core"
+include = [
+  "lib/hipSYCL/librt-backend-cuda*",
+  "lib/hipSYCL/llvm-to-backend/libllvm-to-ptx*",
+  "bin/hipSYCL/llvm-to-backend/llvm-to-ptx*",
+]
+
+[package.run-constraints]
+acpp-runtime-cuda = "<0.0a0"
+acpp-runtime-cuda-nightly = "<0.0a0"
+
+[package.build-dependencies]
+x86_64-microarch-level = "==3"
+
+[package.host-dependencies]
+naga-acpp-core = { workspace = true }
+naga-acpp-llvm = { workspace = true }
+# the exports of these supply the CUDA 12 range: cuda-cudart-dev exports cuda-cudart
+# >=12.9.79,<13 (CUDA 12 only: libcudart's SONAME is major-versioned and dlopen resolves
+# filenames), cuda-version carries the driver floor
+cuda-cudart-dev = "*"
+cuda-version = "==12.9"
+
+[package.run-dependencies]
+naga-acpp-runtime = { path = "../../slices/runtime", version = "==0.dev0" }
+# libdevice.10.bc only (not the cuda-nvvm metapackage, which also drags libnvvm that acpp never loads)
+cuda-nvvm-tools = "*"

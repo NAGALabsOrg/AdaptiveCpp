@@ -1,0 +1,17 @@
+# naga-acpp-llvm: the LLVM-lane mutex of the naga-acpp toolchain (acpp-toolchain mutex/recipe.yaml).
+# Every package host-depends on it, and its weak run export puts `naga-acpp-llvm ==23.0git`
+# on every consumer. TRAP: conda sorts `23.0git` BELOW `23` and `23.0`, so every pin of
+# this package must be an exact `==`.
+[package]
+name = "naga-acpp-llvm"
+version = "23.0git"
+description = "Mutex selecting the LLVM lane (ABI) of the naga-acpp toolchain"
+homepage = "https://github.com/NAGALabsOrg/AdaptiveCpp"
+license = "BSD-2-Clause"
+publish = true
+
+[package.build]
+backend = { name = "pixi-build-naga", version = "*" }
+
+[package.run-exports.weak]
+naga-acpp-llvm = "==23.0git"

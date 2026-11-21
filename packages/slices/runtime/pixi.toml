@@ -1,0 +1,84 @@
+# naga-acpp-runtime: LLVM/Clang shared libraries, SSCP JIT tools, host (OpenMP) JIT backend.
+# Carved from naga-acpp-core. Globs are acpp-toolchain's linux-64 include/exclude for this
+# output in the wax dialect (`*` does not cross `/`), with the agreed partition fixes.
+[package]
+name = "naga-acpp-runtime"
+version = "0.dev0"
+description = "AdaptiveCpp SYCL runtime (generic SSCP JIT): LLVM libraries, JIT tools, OpenMP backend"
+homepage = "https://github.com/NAGALabsOrg/AdaptiveCpp"
+license = "Apache-2.0 WITH LLVM-exception"
+publish = true
+
+[package.build]
+backend = { name = "pixi-build-naga", version = "*" }
+
+[package.build.config]
+compilers = ["c", "cxx"]
+# Exact: the version is a placeholder and AdaptiveCpp has no stable runtime ABI.
+# libllvm/libclang-cpp of our major, and llvm-openmp (we ship our own libomp), would
+# collide with the files we ship; acpp-runtime is the old conda-forge name.
+
+[package.build.config.slice]
+from = "naga-acpp-core"
+include = [
+  # SSCP JIT external tools: ptx JIT execs opt+llc; CPU JIT execs opt+llc+lld
+  "bin/opt",
+  "bin/llc",
+  "bin/lld",
+  "bin/ld.lld",
+  # LLVM/Clang/acpp shared libraries (versioned sonames; libomp, libarcher)
+  "lib/*.so*",
+  # JIT backend plugins, SSCP bitcode, pinned llvm-spirv
+  "lib/hipSYCL/**",
+  "bin/hipSYCL/**",
+  "etc/AdaptiveCpp/**",
+]
+exclude = [
+  # lldb's library belongs to naga-acpp-lldb
+  "lib/liblldb*",
+  # ROCm runtime subset belongs to naga-acpp-runtime-rocm
+  "lib/libhiprtc*",
+  "lib/libamdhip64*",
+  "lib/libhsa*",
+  "lib/libamd_comgr*",
+  "lib/libroc*",
+  # vendor backend plugins and their JIT libraries belong to the vendor packages;
+  # llvm-spirv and llvm-to-spirv STAY here (SPIR-V is shared by level-zero and ocl)
+  "lib/hipSYCL/librt-backend-cuda*",
+  "lib/hipSYCL/llvm-to-backend/libllvm-to-ptx*",
+  "lib/hipSYCL/librt-backend-ze*",
+  "lib/hipSYCL/librt-backend-ocl*",
+  "lib/hipSYCL/librt-backend-hip*",
+  "lib/hipSYCL/llvm-to-backend/libllvm-to-amdgpu*",
+  "bin/hipSYCL/llvm-to-backend/llvm-to-ptx*",
+  "bin/hipSYCL/llvm-to-backend/llvm-to-amdgpu*",
+  # the translator's development files (static library, pkgconfig, headers) belong to naga-acpp-llvm-dev
+  "lib/hipSYCL/ext/llvm-spirv/lib/**",
+  "lib/hipSYCL/ext/llvm-spirv/include/**",
+]
+
+# Re-exported explicitly: run exports of a host dependency do not transit to our own consumers.
+[package.run-exports.weak]
+naga-acpp-runtime = "==0.dev0"
+naga-acpp-llvm = "==23.0git"
+
+[package.run-constraints]
+libllvm23 = "<0.0a0"
+"libclang-cpp23.0" = "<0.0a0"
+llvm-openmp = "<0.0a0"
+acpp-runtime = "<0.0a0"
+acpp-runtime-nightly = "<0.0a0"
+
+[package.build-dependencies]
+x86_64-microarch-level = "==3"
+
+[package.host-dependencies]
+naga-acpp-core = { workspace = true }
+naga-acpp-llvm = { workspace = true }
+libedit = "*"
+libxml2-devel = "*"
+numactl = "*"
+zlib = "*"
+zstd = "*"
+# SVML for the host (OpenMP) JIT: its run export supplies the range.
+intel-cmplr-lib-rt = "*"

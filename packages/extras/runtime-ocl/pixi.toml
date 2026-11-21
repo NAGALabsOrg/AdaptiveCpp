@@ -1,0 +1,38 @@
+# naga-acpp-runtime-ocl: the OpenCL backend plugin. ICDs come from the environment
+# (intel-compute-runtime, pocl, ...) or from the host system via ocl-icd-system, whose
+# post-link script runs only with `run-post-link-scripts = "insecure"`.
+# NB: NVIDIA's OpenCL cannot consume acpp's SPIR-V; this backend lights up on Intel, Mesa rusticl and pocl.
+[package]
+name = "naga-acpp-runtime-ocl"
+version = "0.dev0"
+description = "acpp SYCL runtime with OpenCL backend dependencies (ICD loader)"
+homepage = "https://github.com/NAGALabsOrg/AdaptiveCpp"
+license = "BSD-3-Clause"
+publish = true
+
+[package.build]
+backend = { name = "pixi-build-naga", version = "*" }
+
+[package.build.config]
+compilers = ["c", "cxx"]
+
+[package.build.config.slice]
+from = "naga-acpp-core"
+include = ["lib/hipSYCL/librt-backend-ocl*"]
+
+[package.run-constraints]
+acpp-runtime-ocl = "<0.0a0"
+acpp-runtime-ocl-nightly = "<0.0a0"
+
+[package.build-dependencies]
+x86_64-microarch-level = "==3"
+
+[package.host-dependencies]
+naga-acpp-core = { workspace = true }
+naga-acpp-llvm = { workspace = true }
+# ocl-icd exports itself
+ocl-icd = "*"
+
+[package.run-dependencies]
+naga-acpp-runtime = { path = "../../slices/runtime", version = "==0.dev0" }
+ocl-icd-system = "*"

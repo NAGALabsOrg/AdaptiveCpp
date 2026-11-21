@@ -1,0 +1,44 @@
+# naga-acpp-lldb: lldb, its library and its python module (built against the Python limited API).
+[package]
+name = "naga-acpp-lldb"
+version = "0.dev0"
+description = "LLDB of the naga-acpp toolchain"
+homepage = "https://github.com/NAGALabsOrg/AdaptiveCpp"
+license = "Apache-2.0 WITH LLVM-exception"
+publish = true
+
+[package.build]
+backend = { name = "pixi-build-naga", version = "*" }
+
+[package.build.config]
+compilers = ["c", "cxx"]
+
+[package.build.config.slice]
+from = "naga-acpp-core"
+include = ["bin/lldb*", "lib/liblldb*", "lib/python*/**"]
+
+[package.build-dependencies]
+x86_64-microarch-level = "==3"
+
+[package.host-dependencies]
+naga-acpp-core = { workspace = true }
+naga-acpp-llvm = { workspace = true }
+python = "*"
+libedit = "*"
+libxml2-devel = "*"
+ncurses = "*"
+xz = "*"
+libtree-sitter = "*"
+zlib = "*"
+zstd = "*"
+
+[package.run-dependencies]
+naga-acpp-runtime = { path = "../runtime", version = "==0.dev0" }
+# liblldb links libpython3.14, so the interpreter's minor version is pinned: `python >=3.8`
+# let the solver pick 3.15 and lldb then failed to start.
+python = { pin-compatible = { lower-bound = "x.x", upper-bound = "x.x" } }
+
+[package.run-constraints]
+lldb = "<23.0a0|>=24.0a0"
+acpp-lldb = "<0.0a0"
+acpp-lldb-nightly = "<0.0a0"

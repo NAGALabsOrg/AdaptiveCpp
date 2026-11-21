@@ -1,0 +1,110 @@
+# naga-acpp: the compiler driver side: acpp, clang and its LLVM binutils, resource headers,
+# AdaptiveCpp headers and CMake config, clang cfg files. Carved from naga-acpp-core.
+[package]
+name = "naga-acpp"
+version = "0.dev0"
+description = "AdaptiveCpp SYCL toolchain (develop @ LLVM 23, generic SSCP): compiler, acpp driver, headers"
+homepage = "https://github.com/NAGALabsOrg/AdaptiveCpp"
+license = "Apache-2.0 WITH LLVM-exception"
+publish = true
+
+[package.build]
+backend = { name = "pixi-build-naga", version = "*" }
+
+[package.build.config]
+compilers = ["c", "cxx"]
+# Same-major windows: these names are unversioned upstream, so the window forbids only the
+# LLVM major we ship. Names already major-scoped are forbidden outright.
+
+[package.build.config.slice]
+from = "naga-acpp-core"
+include = [
+  "bin/acpp*",
+  "bin/clang",
+  "bin/clang++",
+  "bin/clang-cl",
+  "bin/clang-cpp",
+  "bin/clang-23",
+  "bin/syclcc",
+  "bin/syclcc-clang",
+  "bin/amdllvm",
+  "bin/amdclang",
+  "bin/amdclang++",
+  "bin/amdclang-cl",
+  "bin/amdclang-cpp",
+  "bin/amdclang-23",
+  "bin/amdlld",
+  "bin/ld64.lld",
+  "bin/lld-link",
+  "bin/wasm-ld",
+  "bin/llvm-ar",
+  "bin/llvm-nm",
+  "bin/llvm-ranlib",
+  "bin/llvm-strip",
+  "bin/llvm-objcopy",
+  "bin/llvm-objdump",
+  "bin/llvm-readelf",
+  "bin/llvm-readobj",
+  "bin/llvm-size",
+  "bin/llvm-strings",
+  "bin/llvm-symbolizer",
+  "bin/llvm-cxxfilt",
+  "bin/llvm-addr2line",
+  "bin/llvm-dwarfdump",
+  "bin/llvm-dlltool",
+  "bin/llvm-lib",
+  "bin/llvm-rc",
+  "bin/llvm-mt",
+  "bin/llvm-windres",
+  "bin/llvm-cov",
+  "bin/llvm-profdata",
+  "bin/llvm-profgen",
+  "bin/*-clang.cfg",
+  "bin/*-clang++.cfg",
+  "bin/*-clang-cpp.cfg",
+  "include/AdaptiveCpp/**",
+  "lib/clang/**",
+  "lib/cmake/AdaptiveCpp/**",
+]
+# the compiler-rt libraries belong to naga-acpp-compiler-rt
+exclude = ["lib/clang/23/lib/**", "lib/clang/23/share/**"]
+
+# THE headline export: anything compiled with this toolchain gets, with zero manifest text
+# on the consumer's side, the runtime it links against and the LLVM lane it was built for.
+[package.run-exports.strong]
+naga-acpp-runtime = "==0.dev0"
+naga-acpp-llvm = "==23.0git"
+
+# Same-major windows: these names are unversioned upstream, so the window forbids only the
+# LLVM major we ship. Names already major-scoped are forbidden outright.
+[package.run-constraints]
+clang = "<23.0a0|>=24.0a0"
+clangxx = "<23.0a0|>=24.0a0"
+llvm = "<23.0a0|>=24.0a0"
+llvm-tools = "<23.0a0|>=24.0a0"
+lld = "<23.0a0|>=24.0a0"
+llvmdev = "<23.0a0|>=24.0a0"
+clangdev = "<23.0a0|>=24.0a0"
+clang-23 = "<0.0a0"
+compiler-rt = "<23.0a0|>=24.0a0"
+# cross-lane exclusion, not made redundant by the mutex
+acpp = "<0.0a0"
+acpp-nightly = "<0.0a0"
+
+[package.build-dependencies]
+x86_64-microarch-level = "==3"
+
+[package.host-dependencies]
+naga-acpp-core = { workspace = true }
+naga-acpp-llvm = { workspace = true }
+
+[package.run-dependencies]
+naga-acpp-runtime = { path = "../runtime", version = "==0.dev0" }
+python = ">=3.9"
+# the floor is the gcc major the toolchain is built with
+libgcc-devel_linux-64 = "14.*"
+libstdcxx-devel_linux-64 = "14.*"
+# the clang cfg files carry --sysroot=; a consumer needs the sysroot installed for it to resolve
+sysroot_linux-64 = ">=2.28"
+# bare clang links with `x86_64-conda-linux-gnu-ld`, which binutils provides
+binutils_impl_linux-64 = "*"
