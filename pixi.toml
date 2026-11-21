@@ -130,11 +130,9 @@ rattler-build = ">=0.72"
 # Scratch environments of check-packages: the activation alone, and the bare toolchain alone.
 [feature.check-activation.dependencies]
 naga-acpp-clangxx_linux-64 = { workspace = true }
-bash = "*"
 
 [feature.check-bare.dependencies]
 naga-acpp-toolchain = { path = "." }
-bash = "*"
 
 [feature.check-llvm-dev.dependencies]
 naga-acpp-llvm-dev = { workspace = true }
