@@ -659,6 +659,10 @@ void SubCFG::removeDeadPhiBlocks(llvm::SmallVector<llvm::BasicBlock *, 8> &Block
   }
 }
 
+static bool isSafeToRecompute(const llvm::Instruction &I) {
+  return !I.mayReadOrWriteMemory() && !I.mayHaveSideEffects();
+}
+
 // check if a contiguous value can be tracked back to only uniform values and the wi-loop indvar
 // currently cannot track back the value through PHI nodes.
 bool dontArrayifyContiguousValues(
@@ -671,6 +675,9 @@ bool dontArrayifyContiguousValues(
   // is cont indvar
   if (VecInfo.isPinned(I))
     return true;
+
+  if (!isSafeToRecompute(I))
+    return false;
 
   llvm::SmallVector<llvm::Instruction *, 4> WL;
   llvm::SmallPtrSet<llvm::Instruction *, 8> UniformValues;
@@ -694,6 +701,8 @@ bool dontArrayifyContiguousValues(
         // collect cont and uniform source values
         if (auto *OpI = llvm::dyn_cast<llvm::Instruction>(V)) {
           if (VecInfo.getVectorShape(*OpI).isContiguousOrStrided()) {
+            if (!isSafeToRecompute(*OpI))
+              return false;
             WL.push_back(OpI);
             ContiguousInsts.push_back(OpI);
           } else if (!UniformValues.contains(OpI))
