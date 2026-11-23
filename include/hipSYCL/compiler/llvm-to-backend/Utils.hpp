@@ -387,6 +387,8 @@ ACPP_DEFAULT_VISIBILITY std::string getLibAmathDir();
 ACPP_DEFAULT_VISIBILITY std::string getLibMvecDir();
 ACPP_DEFAULT_VISIBILITY std::string getBitcodePath();
 ACPP_DEFAULT_VISIBILITY std::string getRedistPackageBitcodePath(const std::string& backend);
+// Text for a failed tool invocation's error message: "with exit code N".
+ACPP_DEFAULT_VISIBILITY std::string describeToolExitCode(int ReturnCode);
 #ifdef _WIN32
 std::string getHostCRuntimeImportLibraryPath();
 #endif

@@ -357,8 +357,7 @@ bool LLVMToSpirvTranslator::translateToBackendFormat(llvm::Module &FlavoredModul
       LLVMSpirVTranslator, Invocation);
 
   if(R != 0) {
-    this->registerError("LLVMToSpirv: llvm-spirv invocation failed with exit code " +
-                        std::to_string(R));
+    this->registerError("LLVMToSpirv: llvm-spirv invocation failed " + describeToolExitCode(R));
     return false;
   }
 

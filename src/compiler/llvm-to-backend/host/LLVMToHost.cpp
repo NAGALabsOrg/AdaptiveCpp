@@ -539,7 +539,7 @@ bool LLVMToHostTranslator::translateToBackendFormat(llvm::Module &FlavoredModule
   int R = executeAndWait(OptPath, OptInvocation, NULLOPT, Redirects);
 
   if (R != 0) {
-    this->registerError("LLVMToHost: opt invocation failed with exit code " + std::to_string(R));
+    this->registerError("LLVMToHost: opt invocation failed " + describeToolExitCode(R));
     return false;
   }
 
@@ -547,7 +547,7 @@ bool LLVMToHostTranslator::translateToBackendFormat(llvm::Module &FlavoredModule
   R = executeAndWait(LLCPath, LlcInvocation, NULLOPT, Redirects);
 
   if (R != 0) {
-    this->registerError("LLVMToHost: llc invocation failed with exit code " + std::to_string(R));
+    this->registerError("LLVMToHost: llc invocation failed " + describeToolExitCode(R));
     return false;
   }
 
@@ -555,7 +555,7 @@ bool LLVMToHostTranslator::translateToBackendFormat(llvm::Module &FlavoredModule
   R = executeAndWait(LLDPath, LldInvocation, NULLOPT, Redirects);
 
   if (R != 0) {
-    this->registerError("LLVMToHost: lld invocation failed with exit code " + std::to_string(R));
+    this->registerError("LLVMToHost: lld invocation failed " + describeToolExitCode(R));
     return false;
   }
 

@@ -424,8 +424,7 @@ bool LLVMToAmdgpuTranslator::hiprtcJitLink(const std::string &Bitcode, std::stri
   int OptR =
       executeAndWait(OptPath, OptInvocation);
   if(OptR != 0) {
-    this->registerError("LLVMToAmdgpu: opt invocation failed with exit code " +
-                        std::to_string(OptR));
+    this->registerError("LLVMToAmdgpu: opt invocation failed " + describeToolExitCode(OptR));
     return false;
   }
   std::string OptOutput;
@@ -596,8 +595,7 @@ bool LLVMToAmdgpuTranslator::clangJitLink(llvm::Module& FlavoredModule, std::str
       InvocationRef[0], InvocationRef);
 
   if(R != 0) {
-    this->registerError("LLVMToAmdgpu: clang invocation failed with exit code " +
-                        std::to_string(R));
+    this->registerError("LLVMToAmdgpu: clang invocation failed " + describeToolExitCode(R));
     return false;
   }
 

@@ -14,8 +14,18 @@
 
 #include <llvm/Support/Program.h>
 
+#include <string>
+
 #ifdef _WIN32
 #include <llvm/Support/FileSystem.h>
+// Only for SetErrorMode; keep the Windows headers lean and macro-free.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #endif
 
 namespace hipsycl {
@@ -34,6 +44,31 @@ std::string getLLVMRedistributablePackagePath() {
   return common::filesystem::join_path(RedistPkg, "llvm");
 }
 
+// On Windows, a child that cannot load a DLL (or crashes) raises a modal
+// system-error / WER dialog. On a headless machine nobody can dismiss it, so
+// the child blocks forever and the JIT hangs instead of failing. The error
+// mode is inherited by child processes: with these flags a missing DLL
+// becomes a non-zero exit code. Set once, before the first child launch.
+void suppressChildErrorDialogs() {
+#ifdef _WIN32
+  static const bool Done = [] {
+    // OR with the previous mode so we never clear flags someone else set.
+    UINT Previous = SetErrorMode(0);
+    SetErrorMode(Previous | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX |
+                 SEM_NOOPENFILEERRORBOX);
+    return true;
+  }();
+  (void)Done;
+#endif
+}
+
+}
+
+std::string describeToolExitCode(int ReturnCode) {
+  return "with exit code " + std::to_string(ReturnCode);
+}
+
+namespace {
 std::string replacePathPlaceholders(std::string path) {
   auto pos = path.find("$ACPP_PATH");
   while (pos != std::string::npos) {
@@ -258,6 +293,7 @@ int executeAndWait(
     llvm::ArrayRef<llvm::StringRef> Args,
     llvm::Optional<llvm::ArrayRef<llvm::StringRef>> Env,
     llvm::ArrayRef<llvm::Optional<llvm::StringRef>> Redirects) {
+  suppressChildErrorDialogs();
   return llvm::sys::ExecuteAndWait(Program, Args, Env, Redirects);
 }
 #else
@@ -266,6 +302,7 @@ int executeAndWait(
     llvm::ArrayRef<llvm::StringRef> Args,
     std::optional<llvm::ArrayRef<llvm::StringRef>> Env,
     llvm::ArrayRef<std::optional<llvm::StringRef>> Redirects) {
+  suppressChildErrorDialogs();
 #if !defined(_WIN32) || LLVM_VERSION_MAJOR < 19
   return llvm::sys::ExecuteAndWait(Program, Args, Env, Redirects);
 #else

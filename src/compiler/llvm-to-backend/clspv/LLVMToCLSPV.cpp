@@ -342,8 +342,7 @@ bool LLVMToCLSPVTranslator::translateToBackendFormat(
   int R = executeAndWait(CLSPV, Invocation);
 
   if (R != 0) {
-    this->registerError("LLVMToCLSPV: clspv invocation failed with exit code " +
-                        std::to_string(R));
+    this->registerError("LLVMToCLSPV: clspv invocation failed " + describeToolExitCode(R));
     return false;
   }
 
