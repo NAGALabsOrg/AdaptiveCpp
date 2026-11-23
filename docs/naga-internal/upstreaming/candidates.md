@@ -116,7 +116,7 @@ rest
 - intent: Let a queue run host operations on threads owned by the runtime (`async_host`), and issue an operation to a backend queue only after its requirements from other queues or host tasks have completed (host-function based deferral on CUDA and HIP, waiting in in-order queues), with retargeted command groups resolved against a retarget context.
 - kind: other: feature
 - secondary: bug fix (deadlocks fixed along the way: `1b335c2a`, `263b06d4`), other: documentation (doc/extensions.md, doc/runtime-spec.md), other: test
-- size: files 29, lines +1251 / -54
+- size: files 29, lines +1251 / -55
 - large: yes (kept at Review 1, U12). Proposed split, to be decided in the conversations: (a) deferral on foreign requirements (`include/hipSYCL/runtime/{cuda,hip}/**`, `src/runtime/{cuda,hip}/**`, `inorder_executor`, `inorder_queue.hpp`, `operations.hpp`, `event.hpp`, `doc/runtime-spec.md`); (b) the `async_host` extension (`async_host_executor.*`, `sycl/{queue,handler,extensions}.hpp`, `doc/extensions.md`, tests); (c) the retarget context (`hints.hpp`, `usm_query.hpp`, handler/queue retarget hunks).
 - requires: none
 - pending: none. Open upstream PRs by path overlap (below) but none is needed.
@@ -365,7 +365,7 @@ rest
 - intent: Add the direct includes that code in `include/hipSYCL/runtime`, `src/runtime` and the Metal backend relies on transitively, so the runtime builds with the libc++ of Xcode 26.
 - kind: bug fix (a build failure; kind accepted at Review 1, U11)
 - secondary: none
-- size: files 53, lines +106 / -3
+- size: files 53, lines +106 / -2
 - large: no
 - requires: none
 - pending: none
@@ -376,7 +376,7 @@ rest
 - conversation: no
 - horizon: now
 - next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and the conflict in `omp_queue.hpp` is resolved against b5535e79
-- branch: pr/xcode26-includes (head bf81c80a6801)
+- branch: pr/xcode26-includes (head 036a0ccef48f)
 
 ```assignment C09
 paths
@@ -416,7 +416,7 @@ hunks
   src/runtime/backend_loader.cpp @31,2
   src/runtime/dag_direct_scheduler.cpp @25,3
   src/runtime/dag_node.cpp @20,3
-  src/runtime/inorder_executor.cpp @21,1 @390,0
+  src/runtime/inorder_executor.cpp @21,1
   src/runtime/serialization/serialization.cpp @20,1
 ```
 

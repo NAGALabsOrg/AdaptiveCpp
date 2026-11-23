@@ -9,7 +9,7 @@ Each branch is B0 plus one candidate's changes as a single commit, pushed to `or
 | candidate | branch | base SHA | head SHA | commit subject | conflict resolution |
 |---|---|---|---|---|---|
 | C08 | pr/alloca-alignment-size-name | 27ed6400e890cf0ecd2aa0b055d75cc08ac68dfc | 9c902b6d345d841fa5a7f9df752dae550035f432 | [SSCP] Keep alloca alignment, size and name in address space passes | none |
-| C09 | pr/xcode26-includes | 27ed6400e890cf0ecd2aa0b055d75cc08ac68dfc | bf81c80a680182a3522c25f8017e9941d8215c88 | [Runtime] Include what you use for Xcode 26 libc++ | omp_queue.hpp: include block keeps <mutex> from b5535e79 and adds <memory> |
+| C09 | pr/xcode26-includes | 27ed6400e890cf0ecd2aa0b055d75cc08ac68dfc | 036a0ccef48f15e559696eb552f227cbcf49daff | [Runtime] Include what you use for Xcode 26 libc++ | omp_queue.hpp: include block keeps <mutex> from b5535e79 and adds <memory> |
 | C11 | pr/pcuda-robustness | 27ed6400e890cf0ecd2aa0b055d75cc08ac68dfc | a78cf93162306b201d325008957fb7b69758f242 | [PCUDA] Make error handling robust and launch MSVC kernel names | none |
 | C12 | pr/ocl-spirv-cl-std | 27ed6400e890cf0ecd2aa0b055d75cc08ac68dfc | 1c14f4cf7268113b344c2d2701b3b023b4aae30c | [OpenCL] Build SPIR-V with the device's OpenCL C version | none |
 | C13 | pr/ocl-prefetch-hint | 27ed6400e890cf0ecd2aa0b055d75cc08ac68dfc | d91d044e23305d85789298bfdbf1ad9ef2df3c02 | [OpenCL] Ignore failed USM prefetch hints | none |

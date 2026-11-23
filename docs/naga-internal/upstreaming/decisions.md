@@ -102,4 +102,6 @@ Entry by id (flags, questions, order, horizons and next steps approved as drafte
 
 Wording fix after Review 2 (system test T2, decided by the Research Lead as a wording correction): C08's title and intent now also cover keeping the alloca's name (`takeName`), which the change already did; no assignment, kind or flag changed.
 
+Correction after Review 2 (fix-branches T3, Research Lead, factual): the deletion hunk src/runtime/inorder_executor.cpp @390,0 is C02's (it closes the namespace C02's additions re-close), not C09's; assigned by adjacency under U01.
+
 Unresolved list after Review 2: none.
