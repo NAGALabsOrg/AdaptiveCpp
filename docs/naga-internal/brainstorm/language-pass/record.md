@@ -93,7 +93,7 @@ Changelog:
 - Slice with a stride, same shape: K1 levels 2 and 3 on work1 tiles 3, 7, 11, 15 and 15: 16 groups instead of 21; each level-2 tile pulls only lower tiles and its own (W11).
 - Array tiles local for a work set (W14): K6 marks the A and B bands local; each work tile (each segment) populates its own copy.
 - One-tile slice: K7 sums all 16 partial histograms on work tile 15, the only tile allowed to pull all of its set (W11), as 16 units x 16 items.
-Group counts: K1 16 (shape {1, 4}); K6 2048 (shape {2, 4, 128}, stages use 256 and 512 work-items); K7 16 (shape {1, 256}, the slice uses 256).
+Group counts: K1 16 (shape {1, 4}); K6 2048 (shape {2, 4, 128}; bands held locally per work tile); K7 16 (shape {1, 256}, the slice uses 256).
 
 ### 4.2 Fitting the work-group cap (D10)
 - Different work tiles, chosen at construction: K6 built as 2 x 4 outputs x 128 = 1024 per group; no cross-segment cost.
@@ -175,5 +175,5 @@ Answers applied and traced: Q5 on K3 (y[k] = k + 1); Q6 on K10 tiled with n = 30
 | C7 | 2026-11-23 | delta page, round 2 | see delta.md | 0 new (4 remaining) | correction: one kh.mark_local with a segmented mode (D12) |
 | C8 | 2026-11-23 | delta page, round 3 | see delta.md | 0 new (4 remaining) | answers to Q5, Q6, Q8, Q9 (D13); chaining confirmed (D14) |
 | C9 | 2026-11-23 | delta page, round 4 | see delta.md | 0 | graph API decisions D15-D17 |
-| C10 | 2026-11-23 | delta page, round 5 | see delta.md | 0 | pending |
+| C10 | 2026-11-23 | delta page, round 5 | see delta.md | 0 | agreed 2026-11-23 against dd6245df (summary v6); pass closed |
 Total questions put: 11 (Q7 withdrawn).
