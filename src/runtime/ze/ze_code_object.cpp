@@ -16,7 +16,7 @@
 #include "hipSYCL/runtime/ze/ze_queue.hpp"
 #include "hipSYCL/runtime/error.hpp"
 #include <algorithm>
-#include <bits/stdint-uintn.h>
+#include <cstdint>
 #include <level_zero/ze_api.h>
 #include <cassert>
 #include <string>
