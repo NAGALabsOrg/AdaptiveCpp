@@ -360,10 +360,22 @@ result ocl_queue::submit_prefetch(prefetch_operation &op, const dag_node_ptr&) {
   }
 
   if(err != CL_SUCCESS) {
-    return make_error(
-          __acpp_here(),
-          error_info{"ocl_queue: enqueuing prefetch failed",
-                     error_code{"CL", static_cast<int>(err)}});
+    // Prefetch is only a performance hint in SYCL, so a failed migrate (e.g.
+    // Intel CPU OpenCL returns CL_INVALID_VALUE) must not abort the
+    // application. Keep a completion event for the operation by enqueueing a
+    // marker instead.
+    HIPSYCL_DEBUG_WARNING
+        << "ocl_queue: prefetch not supported by this device/runtime (CL:"
+        << static_cast<int>(err) << "), ignoring hint" << std::endl;
+
+    evt = cl::Event{};
+    cl_int marker_err = _queue.enqueueMarkerWithWaitList(nullptr, &evt);
+    if(marker_err != CL_SUCCESS) {
+      return make_error(
+            __acpp_here(),
+            error_info{"ocl_queue: enqueuing marker after ignored prefetch failed",
+                       error_code{"CL", static_cast<int>(marker_err)}});
+    }
   }
 
   register_submitted_op(evt);
