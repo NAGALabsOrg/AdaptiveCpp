@@ -16,8 +16,64 @@
 #include "hipSYCL/runtime/ocl/ocl_queue.hpp"
 #include "hipSYCL/runtime/ocl/ocl_hardware_manager.hpp"
 
+#include <cstdio>
+#include <string>
+#include <vector>
+
 namespace hipsycl {
 namespace rt {
+
+namespace {
+
+// The -cl-std option for building SPIR-V on this device, or an empty string.
+// Without it, some runtimes (e.g. Intel's CPU runtime) build the SPIR-V atomics against OpenCL 1.2
+// builtins; the newest of OpenCL C 3.0 and 2.0 that the device supports selects the 2.0+ ones.
+std::string get_cl_std_option(const cl::Device& dev) {
+  {
+    // OpenCL 3.0 platforms: CL_DEVICE_OPENCL_C_ALL_VERSIONS lists every supported OpenCL C version.
+    // This backend is compiled against OpenCL 2.1 headers (CL_HPP_TARGET_OPENCL_VERSION), so the
+    // query constant and the cl_name_version layout are spelled out here. Pre-3.0 platforms answer
+    // with an error, which sends us to the CL_DEVICE_OPENCL_C_VERSION fallback below.
+    constexpr cl_device_info device_opencl_c_all_versions = 0x1066;
+    struct name_version {
+      cl_uint version; // a cl_version
+      char name[64];
+    };
+    std::vector<name_version> versions;
+    cl_int err = dev.getInfo(device_opencl_c_all_versions, &versions);
+    if(err == CL_SUCCESS) {
+      bool has_3_0 = false;
+      bool has_2_0 = false;
+      for(const name_version& v : versions) {
+        // cl_version: major in bits 31..22, minor in bits 21..12
+        unsigned major = v.version >> 22;
+        unsigned minor = (v.version >> 12) & 0x3ffu;
+        if(major == 3 && minor == 0)
+          has_3_0 = true;
+        if(major == 2 && minor == 0)
+          has_2_0 = true;
+      }
+      if(has_3_0)
+        return "-cl-std=CL3.0";
+      if(has_2_0)
+        return "-cl-std=CL2.0";
+      return std::string{};
+    }
+  }
+
+  // Pre-3.0 platforms: parse CL_DEVICE_OPENCL_C_VERSION ("OpenCL C X.Y ...")
+  std::string version_string;
+  cl_int err = dev.getInfo(CL_DEVICE_OPENCL_C_VERSION, &version_string);
+  if(err == CL_SUCCESS) {
+    int major = 0;
+    int minor = 0;
+    if(std::sscanf(version_string.c_str(), "OpenCL C %d.%d", &major, &minor) == 2 && major >= 2)
+      return "-cl-std=CL2.0";
+  }
+  return std::string{};
+}
+
+} // anonymous namespace
 
 result ocl_sscp_code_object_invoker::submit_kernel(
     const kernel_operation &op, hcf_object_id hcf_object,
@@ -79,6 +135,11 @@ ocl_executable_object::ocl_executable_object(const cl::Context& ctx, cl::Device&
   }
   
   std::string options_string="-cl-uniform-work-group-size";
+  {
+    std::string cl_std = get_cl_std_option(_dev);
+    if(!cl_std.empty())
+      options_string += " " + cl_std;
+  }
   for(const auto& flag : config.build_flags()) {
     if(flag == kernel_build_flag::fast_math) {
       options_string += " -cl-fast-relaxed-math -cl-denorms-are-zero";

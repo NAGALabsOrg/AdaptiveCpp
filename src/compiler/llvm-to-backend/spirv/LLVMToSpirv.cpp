@@ -79,6 +79,24 @@ void appendIntelLLVMSpirvOptions(llvm::SmallVector<std::string>& out) {
   }
 }
 
+// Declare the module as OpenCL C 2.0, the kernel language of the OpenCL 2.1
+// devices this backend requires. Without it llvm-spirv emits
+// "OpSource Unknown 0", and consumers such as Intel's CPU OpenCL runtime then
+// read the module with OpenCL 1.2 builtin semantics, which have no
+// generic-address-space atomics (missing symbols like
+// _Z10atomic_addPU3AS4Vii at clBuildProgram).
+void setOpenCLSourceVersion(llvm::Module &M) {
+  auto &Ctx = M.getContext();
+  auto *I32 = llvm::Type::getInt32Ty(Ctx);
+  if(auto *Existing = M.getNamedMetadata("opencl.ocl.version"))
+    M.eraseNamedMetadata(Existing);
+  llvm::Metadata *Version[] = {
+      llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(I32, 2)),
+      llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(I32, 0))};
+  M.getOrInsertNamedMetadata("opencl.ocl.version")
+      ->addOperand(llvm::MDNode::get(Ctx, Version));
+}
+
 bool setDynamicLocalMemoryCapacity(llvm::Module& M, unsigned numBytes) {
   llvm::GlobalVariable* GV = M.getGlobalVariable(DynamicLocalMemArrayName);
 
@@ -234,6 +252,8 @@ bool LLVMToSpirvTranslator::toBackendFlavor(llvm::Module &M, PassHandler& PH) {
   if (!this->linkBitcodeFile(M, BuiltinBitcodeFile, M.getTargetTriple(), M.getDataLayoutStr()))
 #endif
     return false;
+
+  setOpenCLSourceVersion(M);
 
   // Set up local memory
   if(DynamicLocalMemSize > 0) {
