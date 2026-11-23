@@ -11,7 +11,7 @@ In short: 19 candidates, 6 keep-in-fork decisions. 9 candidates need a maintaine
 Two facts, both recorded, not reconciled (lookup 2026-11-23):
 - CONTRIBUTING.md at U (lines 21-30) states the cadence `year.02`, `year.06`, `year.10` (released at the end of February, June and October), no new features in the last week before a release, and in the last two weeks new features only for components under heavy development (for example SSCP or stdpar).
 - The GitHub milestone `26.10.0` is open (13 open and 8 closed items, no due date, updated 2026-11-19T20:05:03Z) and PRs #2273, #2282, #2307 and #1986 carry it, while the end-of-October 2026 slot passed without a tag: the latest tag is v25.10.0 (2025-11-05) and PR #2108 "Bump version to 26.10" is open.
-- The next release date is not announced in any source found. No candidate has the horizon "after next release"; whether any should is Jack's call at Review 2.
+- The next release date is not announced in any source found. No candidate has the horizon "after next release" (decided at Review 2).
 
 ## Order and horizons
 
