@@ -91,7 +91,7 @@ Changelog:
 ### 4.1 Reusing work-groups for sub-problems of different shapes
 - Same work set, shorter run (Q5): K3 step 2 takes each tile's total on its own group, 1 of 64 items active.
 - Slice with a stride, same shape: K1 levels 2 and 3 on work1 tiles 3, 7, 11, 15 and 15: 16 groups instead of 21; each level-2 tile pulls only lower tiles and its own (W11).
-- Full slice, different shape: K6 stages A rows ({2} x 128) and B columns ({4} x 128) on the same groups as the {2, 4} x 128 product; the stages are marked local and pulled by the same work tiles (W2).
+- Array tiles local for a work set (W14): K6 marks the A and B bands local; each work tile (each segment) populates its own copy.
 - One-tile slice: K7 sums all 16 partial histograms on work tile 15, the only tile allowed to pull all of its set (W11), as 16 units x 16 items.
 Group counts: K1 16 (shape {1, 4}); K6 2048 (shape {2, 4, 128}, stages use 256 and 512 work-items); K7 16 (shape {1, 256}, the slice uses 256).
 
@@ -122,7 +122,7 @@ Per kernel, the graph and its order: K1, K2: each slice task depends on level ta
 | F12 | K2 | slice offset and stride per level inside repeat | approach right | derived from bound counts inside fn (P20) |
 | F13 | K4, K12, K13 | units in a tile need their own window | approach right | P09 unit.id() |
 | F14 | K5 | gather from data-chosen tiles of its own set would break W11 | wrong approach | gather on a later work set (within its own set a data-chosen pull is a cycle in the tile graph, W11) |
-| F15 | K6 | 16 x 16 x 128 over the cap; inputs shared in local memory | approach right for the cap (retile the work); for sharing, no primitive marks an input local: wrong approach | copy pass on a full slice, marked local (D7's GEMM description); Q9 |
+| F15 | K6 | 16 x 16 x 128 over the cap; inputs shared in local memory | approach right for the cap (retile the work); for sharing, no primitive marks an input local: wrong approach | copy pass on a full slice, marked local (D7's GEMM description); Q9 (superseded by F25) |
 | F16 | K7 | D5's tile_bin returns bins values, not one per item | approach right | P22 returns a run of bins values |
 | F17 | K7 | combining all partials pulls every tile of the set | approach right | a one-tile slice on the highest tile |
 | F18 | K8 | F reads E's tiles in reverse | wrong approach on one set | F on its own later set |
@@ -160,7 +160,7 @@ Per kernel, the graph and its order: K1, K2: each slice task depends on level ta
 | Q8 | Element-wise work with nothing shared: written as runs on a work set (K9-K11). | a: only that; b: also keep kh.map as a plain range launch for kernels with no work sets | a | K9-K11 | answered: neither; work-item arrays (D13, D14) |
 | Q9 | Sharing an input tile in local memory: a copy pass on a slice of the same work set, marked local (K6). | a: as written; b: a primitive marking an input tile local for a work set | a | K6 | answered b: mark array tiles local for a work set (D13) |
 
-Each option was traced on a dependent kernel: Q5b K3 with a 16-group totals set (y[k] = k + 1); Q6b K10 with n = 300 and a zero-filled last tile (y[299] = a * 299 + b); Q7 names only; Q8b K9 as a range launch (16i + 15); Q9b K6 marking the bands local (C[3][5] = 1920).
+Answers applied and traced: Q5 on K3 (y[k] = k + 1); Q6 on K10 tiled with n = 300 (y[299] = a * 299 + b); Q8 on K9 as a work-item kernel (16i + 15); Q9 on K6 with bands marked local (C[3][5] = 1920).
 
 ## 8. Contact log
 
@@ -174,5 +174,6 @@ Each option was traced on a dependent kernel: Q5b K3 with a 16-group totals set 
 | C6 | 2026-11-23 | delta page | see delta.md | 0 new (4 remaining) | correction: segmented work sets as their own type, run_distributed / run_replicated (D11) |
 | C7 | 2026-11-23 | delta page, round 2 | see delta.md | 0 new (4 remaining) | correction: one kh.mark_local with a segmented mode (D12) |
 | C8 | 2026-11-23 | delta page, round 3 | see delta.md | 0 new (4 remaining) | answers to Q5, Q6, Q8, Q9 (D13); chaining confirmed (D14) |
-| C9 | 2026-11-23 | delta page, round 4 | see delta.md | 0 | pending |
+| C9 | 2026-11-23 | delta page, round 4 | see delta.md | 0 | graph API decisions D15-D17 |
+| C10 | 2026-11-23 | delta page, round 5 | see delta.md | 0 | pending |
 Total questions put: 11 (Q7 withdrawn).

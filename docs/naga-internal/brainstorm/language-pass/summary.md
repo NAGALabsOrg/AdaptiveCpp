@@ -1,4 +1,4 @@
-# The revised kernel language: summary for agreement (v5)
+# The revised kernel language: summary for agreement (v6)
 
 This page is all you need to read; delta.md lists what changed since v1. The full record (every kernel with its trace, the mechanisms, the misfit log, the review) is in record.md and kernels.md beside it.
 
@@ -39,6 +39,38 @@ Rules:
 - Pulls form a dependency graph between tiles; a tile chosen from kernel data depends on every tile of its source set. The toolchain orders the native groups so each tile waits only on groups ahead of it; if no order exists, the builder rejects the kernel naming the cycle, and you break it with another work set. So data-chosen pulls only go from one work set to another.
 - Over the device's group cap, at construction: build different work tiles, or segment the run. A segmented work set is its own type: its units run_distributed (each segment its share; collectives joined across segments with a global dependency) or run_replicated (every segment the whole run; collectives stay in the group), and results of run_distributed are marked local only as kh.mark_local<sg::segmented> (the plain form is an error there, and the segmented form is an error anywhere else). run_replicated is rejected if its input is a distributed result of its own set. The data tiling never changes.
 - A kernel uses work tiles or work items, never both. A work item takes inputs (elements or array tiles) and only its own earlier results (same index); result arrays never feed work tiles.
+
+## The graph around a kernel (D15-D17)
+
+```cpp
+sg::graph g;
+auto x_handle = g.create_mem_handle<float>();
+auto n_handle = g.create_mem_handle<int>();
+auto y_handle = g.create_mem_handle<float>();
+
+g.submit<sg::host>([&](sg::host_handle& hh) {
+  // host work that writes the size into n_handle
+});
+
+g.submit(dev, [&](sg::kernel_handle& kh) {                // the builder itself; default kind: device kernel
+  auto n     = kh.launch_value(n_handle);                 // sg::launch_value<int>, read by the host at launch
+  auto x     = kh.source(x_handle, sg::shape<1>({n}));    // input role
+  auto items = kh.work_items({n});
+  auto y = kh.map_items(items, [=](auto item) {
+    auto v = x[item.id()];
+    return item.compute(v, [](float v) { return 2 * v + 1; });
+  });
+  kh.evaluate(y_handle, y);                               // result role
+});
+
+g.run();                                                  // compiles the graph once and runs it
+g.run();                                                  // runs the same graph; only data changes
+```
+
+- The submit lambda is the builder; it runs at submit. kh.source(handle, shape) declares an input, kh.evaluate(handle or sg::inplace(...), elements) a result. The kernels below write `kh.source(x_in)` and `out = kh.evaluate(e)`; read them as these forms.
+- submit takes the work kind as a template argument: device kernel by default, sg::host, sg::interop.
+- A graph is built once. No key tuple, no structural hash; changing a graph's structure is a separate operation, not designed yet.
+- kh.launch_value(handle) replaces graph promises and futures. Any work may write the handle; the host reads it just before the node launches, on every run. A launch value is a bound value (sizes, counts, repeat counts), never structure.
 
 ## Four kernels
 
@@ -172,4 +204,5 @@ All answered (D13, D14): shorter runs on a work set are allowed; a tile size tha
 - Element-wise work uses work-item kernels (kh.work_items, kh.map_items); a kernel uses work tiles or work items, never both.
 - Array tiles can be marked local for a work set; the matrix product needs no staging pass.
 - Tiles need not divide their array: the last tile is partial, padded by an oob policy, and join trims it.
+- Graph API: the submit lambda is the builder (kind as a template argument), the graph is built once, kh.launch_value replaces promise and future, no key tuple.
 - All 14 kernels are written and traced (kernels.md).

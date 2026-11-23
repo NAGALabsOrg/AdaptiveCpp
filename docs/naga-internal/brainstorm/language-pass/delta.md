@@ -27,3 +27,10 @@ Your correction: fitting the cap happens only at construction.
 - Work-item kernels: `kh.work_items(range)`, `kh.map_items(items, body(item))`, `item.compute(inputs..., fn)`. A plain range launch; each item reads inputs and only its own earlier results; a kernel uses work tiles or work items, never both. The element-wise chain, the run-time component and inplace contributions are now work-item kernels.
 - `kh.mark_local(array_tiles, work)`: array tiles held locally by every work tile (every segment) that pulls them. The matrix product drops its staging maps.
 - No decisions remain open.
+
+## Round 5 (D15-D17): summary v6
+- The submit lambda is the kernel builder: `g.submit(dev, [&](sg::kernel_handle& kh) { ... })`; `g.submit<sg::host>` and `g.submit<sg::interop>` for the other kinds.
+- Inputs and results are declared inside it: `kh.source(handle, shape)`, `kh.evaluate(handle, elements)`.
+- A graph is built once and every run executes it; no key tuple, no structural hash.
+- `kh.launch_value(handle)` replaces promise and future: any work writes the handle, the host reads it before the node launches; bound values only.
+- Cleanup: the non-segmented matrix product no longer has staging maps.

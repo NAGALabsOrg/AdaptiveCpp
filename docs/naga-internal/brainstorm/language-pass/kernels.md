@@ -185,7 +185,7 @@ Trace: y[1] = src[7] = 14; y[37] = src[259 mod 256 = 3] = 6.
 ## K6 Matrix product, 128 x 128
 
 Reference: `C[i][j] = sum over k of A[i][k] * B[k][j];` A[i][k] = i, B[k][j] = j: C[i][j] = 128ij; C[3][5] = 1920, C[127][127] = 2064512.
-Derivation (Jack's): output element (i, j) needs row i of A and column j of B; a block of outputs shares rows and columns, so A is tiled in row bands and B in column bands; each output is a unit whose run multiplies its row by its column and reduces. 16 x 16 outputs x 128 items = 32768 work-items exceeds the cap of 1024, so the work tiles are built as 2 x 4 outputs (data tiling unchanged); the segmented form below keeps 16 x 16. The work tile's rows of A and columns of B are staged once on the same groups and marked local.
+Derivation (Jack's): output element (i, j) needs row i of A and column j of B; a block of outputs shares rows and columns, so A is tiled in row bands and B in column bands; each output is a unit whose run multiplies its row by its column and reduces. 16 x 16 outputs x 128 items = 32768 work-items exceeds the cap of 1024, so the work tiles are built as 2 x 4 outputs (data tiling unchanged); the segmented form below keeps 16 x 16. The A and B bands are marked local for the work set (W14), so each work tile holds its bands in local memory.
 
 ```cpp
 auto A       = kh.source(A_in);                                   // 128 x 128
@@ -193,49 +193,28 @@ auto B       = kh.source(B_in);                                   // 128 x 128
 auto a_bands = kh.tile(A, {16, 128});                             // 8 x 1 tiles
 auto b_bands = kh.tile(B, {128, 16});                             // 1 x 8 tiles
 auto work    = kh.work_tiles({64, 32}, {2, 4}, 128);              // 2048 groups of 2 x 4 units x 128 items
-// stage this work tile's 2 rows of A
-auto a_work  = kh.slice_work(work, {0, 0}, {64, 32}, {1, 1}, {2}, 128);
-auto a_stage = kh.map_work(a_work, [=](auto unit) {
+kh.mark_local(a_bands, work);                                     // every work tile holds its A band locally
+kh.mark_local(b_bands, work);                                     // ... and its B band
+auto C_tiles = kh.map_work(work, [=](auto unit) {
   auto t      = unit.tile();
   auto u      = unit.id();
   auto row    = 2 * t[0] + u[0];
+  auto col    = 4 * t[1] + u[1];
   auto a_band = a_bands[{row / 16, 0}];
-  auto a_row  = sg::slice(a_band, {row % 16, 0}, {1, 128});
-  auto a_run  = sg::flatten(a_row);
-  return unit.run(a_run, pass_items);
-});                                                               // 64 x 32 result tiles of {2, 128}
-kh.mark_local(a_stage);
-// stage this work tile's 4 columns of B
-auto b_work  = kh.slice_work(work, {0, 0}, {64, 32}, {1, 1}, {4}, 128);
-auto b_stage = kh.map_work(b_work, [=](auto unit) {
-  auto t      = unit.tile();
-  auto u      = unit.id();
-  auto col    = 4 * t[1] + u[0];
   auto b_band = b_bands[{0, col / 16}];
+  auto a_row  = sg::slice(a_band, {row % 16, 0}, {1, 128});
   auto b_col  = sg::slice(b_band, {0, col % 16}, {128, 1});
+  auto a_run  = sg::flatten(a_row);
   auto b_run  = sg::flatten(b_col);
-  return unit.run(b_run, pass_items);
-});                                                               // 64 x 32 result tiles of {4, 128}
-kh.mark_local(b_stage);
-// each output: its row of A times its column of B
-auto C_tiles = kh.map_work(work, [=](auto unit) {
-  auto t     = unit.tile();
-  auto u     = unit.id();
-  auto my_a  = a_stage[t];
-  auto my_b  = b_stage[t];
-  auto a_row = sg::slice(my_a, {u[0], 0}, {1, 128});
-  auto b_row = sg::slice(my_b, {u[1], 0}, {1, 128});
-  auto a_run = sg::flatten(a_row);
-  auto b_run = sg::flatten(b_row);
   return unit.run(a_run, b_run, dot_items);
 });                                                               // 64 x 32 result tiles of {2, 4}
-auto C_elems = kh.join(C_tiles);                                  // 128 x 128
+auto C_elems = kh.join(C_tiles);
 C_out = kh.evaluate(C_elems);
 ```
 
-Work-groups: 2048 groups of {2, 4, 128} = 1024 work-items; the stages use 256 and 512 of them. The stages are slices of the same set, pulled only by their own work tile.
-Placement: A, B global inputs; a_stage, b_stage local (pulled by other units of their own work tile, marked, W2, W3); products value; C result memory; bands, slices, C_elems views.
-Trace: C[3][5]: row 3 is work tile row 1, unit row 1; column 5 is work tile column 1, unit column 1; a_stage row 1 is A row 3 (all 3s); b_stage row 1 is B column 5 (all 5s); 128 x 15 = 1920. C[127][127] = 128 x 127 x 127 = 2064512.
+Work-groups: 2048 groups of {2, 4, 128} = 1024 work-items; each group populates its own copy of its A band and B band (W14).
+Placement: A, B global inputs; a_bands, b_bands local per work tile (W14); products registers; C result memory; slices and C_elems views.
+Trace: C[3][5]: row 3 of A's band 0 (all 3s), column 5 of B's band 0 (all 5s); 128 x 15 = 1920. C[127][127] = 128 x 127 x 127 = 2064512.
 
 Segmented form, keeping Jack's 16 x 16 outputs per work tile:
 
