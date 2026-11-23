@@ -121,3 +121,41 @@ auto y = sg::join(kh.map(scanned, sg::extend_tiles(increments, 4, sg::repeat),
                          [](auto t, auto inc) { return t + inc; }));                                  // 16 elements
 out = kh.evaluate(y);
 ```
+
+### D4 Index maps (Jack, 2026-11-23)
+- Every builder call is on `kh`, views included: `kh.tile`, `kh.retile`, `kh.join`, `kh.extend_tiles`, `kh.index_map`, `kh.stencil`, `kh.define_tiles`. Body vocabulary (`sg::reduce`, `sg::inclusive_scan`, `sg::subset`, `sg::bin_count`) stays in `sg`. D3's `sg::` builder spellings read as `kh.`.
+- An index map is tiles of indices into an element array. `kh.index_map(map, oob_policy, elements)` is the only thing that applies one; it gives a view of tiles of values. The tiles come from the map, not from the source, so counts need not match the source (interpolation: M targets drawing on N sources).
+- Where index maps come from: `kh.define_tiles(tiles, tile_shape, [](auto tile, auto local) { return source_index; })`, computed on the fly; `kh.stencil(offsets, roots)`, a helper that builds an index map (roots a range, index elements, or every element); an index array from data, tiled with `kh.tile`.
+- Out-of-bounds policy is given where the map is applied: `sg::fill{v}`, `sg::wrap{}`. Any index outside the source goes to the policy; there is no separate padding sentinel.
+- Dependencies: closed-form for stencil and range helpers. `define_tiles` functions are evaluated by the builder on the host once per builder run to build an exact dependency table (default), skipped when a keyed builder reuses its tree. Index arrays from data are opaque: a consumer tile depends on all of the source; this costs only when the source is computed in the kernel, and waits only on claimed work, still one launch.
+- Views (index maps included) never hold values; what is stored is the lowering's and `evaluate`'s.
+- Replaces: `gather_tiles` (D3).
+- Open: the D1 width rule when tiles are wider than the products (stencil tiles of 3).
+
+Stencil:
+```cpp
+auto x       = kh.source(x_in);                                   // 16 elements
+auto stencil = kh.stencil({-1, 0, 1}, sg::range(0, 16));         // 16 tiles of 3 indices
+auto windows = kh.index_map(stencil, sg::fill{0}, x);             // 16 tiles of 3 values
+auto y = kh.join(kh.map(windows, [](auto w) { return sg::reduce(w, sycl::plus<>{}); }));  // 16 elements
+out = kh.evaluate(y);
+```
+
+Scan, step 3:
+```cpp
+auto overlaps   = kh.join(kh.map(scanned, [](auto t) { return sg::subset(t, sg::last); }));  // 4 elements
+auto before_map = kh.define_tiles(4, 4, [](auto t, auto l) { return l < t ? l : -1; });
+auto gathered   = kh.index_map(before_map, sg::fill{0}, overlaps);                            // 4 tiles of 4
+auto increments = kh.map(gathered, [=](auto t) { return sg::reduce(t, plus); });             // 4 tiles of 1
+```
+
+Interpolation (new stress program P12):
+```cpp
+auto src_vals = kh.source(src_in);                                // N source node values
+auto nbrs     = kh.source(neighbours_in);                         // M*4 indices
+auto weights  = kh.source(weights_in);                            // M*4 weights
+auto gathered = kh.index_map(kh.tile(4, nbrs), sg::fill{0}, src_vals);   // M tiles of 4
+auto y = kh.join(kh.map(gathered, kh.tile(4, weights),
+                        [](auto v, auto w) { return sg::reduce(v * w, sycl::plus<>{}); }));   // M elements
+out = kh.evaluate(y);
+```
