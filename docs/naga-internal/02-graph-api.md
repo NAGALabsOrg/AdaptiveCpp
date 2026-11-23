@@ -34,7 +34,10 @@ graph.run();
 - The allocation's size and the size of an array constructed on it must match.
 - **Creating a handle reserves nothing.** The only check is that the allocation fits on at least one device, or in host memory. The sum of all allocations may far exceed any device's memory. A real allocation is made only when needed, and a failure is reported when it happens, as an async error.
 - **Allocation follows use, per device.** Nothing is allocated for a handle no work uses, and only devices that use it get a copy. When a later run no longer uses it on a device, that copy is freed.
+- **Allocation timing.** Timing matters because memory-constrained programs bring work in and out of memory: one piece of work frees while the next allocates, and other work carries on meanwhile. The timings an allocation may need are: as early as possible; once its shape is known; after an upstream free on the same device; and at submission. Choosing among them is a toolchain property and is deferred (see the README); until then the default is fixed.
+- **Frees are asynchronous and ordered.** A free is non-blocking work in the graph with its own event. A later allocation on the same device is ordered after that free's event, so it does not fail for lack of memory the free was about to return.
 - **Global tracking.** Handles are not created against a graph. Their state is tracked globally, so several graphs may run over the same handles. The runtime's global tracker owns the underlying allocations; the user owns the handle's lifetime through `free`.
+- **Events per handle.** Every piece of work that uses a handle records its event on that handle's entry in the global tracker. This is what lets `free(handle)` release memory only once the work using it has finished, lets a device copy that a later run no longer uses be freed after its last user, and lets several graphs run over the same handles. Full ordering across graphs remains future work (section 15).
 - **Slices.** A slice is a handle onto part of an allocation. Each root allocation has an overlap structure in the global tracker. Work on disjoint slices does not order against each other. Using any slice on a device allocates the whole root allocation there. `free` releases one slice; when the last is freed the root leaves tracking and its allocations are released.
 
 ## 4. Kernels and ordering
@@ -44,6 +47,7 @@ graph.run();
 - Declaration order comes first: work whose roles conflict on the same handle runs in the order it was recorded. Shared reads do not conflict. Disjoint slices do not conflict.
 - **Several producers into one handle, without the in-place decorator,** run in declaration order and the last write wins. The toolchain warns when a write is overwritten with no consumer in between: either the decorator was forgotten or a consumer was, and the earlier work is useless.
 - Data movement between devices and the host is done by migration nodes the graph injects. They order like any other node.
+- **Old contents.** An output without the in-place decorator is fully defined by its kernel, so the handle's old contents are never brought to the device for it. Only an `inplace` output needs what the handle already holds (section 5).
 
 ## 5. In-place combine across kernels
 
@@ -106,7 +110,7 @@ A host-only primitive of the graph, for a value host work computes that later su
 
 ## 8. Interop
 
-Users may interop with vendor libraries. Interop work is shaped like a host work submission, with interop handles that give access to native objects. It is not designed further yet.
+Users may interop with vendor libraries. Interop work is essentially a host work definition, with interop handles that give access to native objects. Supporting it is a goal, but it is not designed further yet; the current focus is host work and kernel definitions.
 
 ## 9. Graph cycle
 
@@ -123,6 +127,7 @@ A cycle exists at two levels, and it is the same abstract primitive at both. The
 ## 10. Running, identity and caching
 
 - `run` executes the recorded graph and clears the recording, so later submissions build a new graph. This is what makes graphs dynamic from run to run.
+- `run` does not block: it issues the graph's work and returns, so graphs run back to back. It probably returns an event; that is not settled.
 - If the new graph is identical to a previous one, the compiled program is reused.
 - Identity is a structural hash built as nodes are added: the operations and their edges. Sizes, launch values, graph futures and which handles are bound are bound values. They are not in the hash and changing them does not recompile the host program.
 - `graph.wait()` waits for a graph to finish. Destroying a graph waits only for that graph's work in flight.
@@ -131,7 +136,7 @@ A cycle exists at two levels, and it is the same abstract primitive at both. The
 ## 11. Errors
 
 - Errors while `run` is issuing work, including every launch-time validation in `01-kernel-language.md`, are thrown immediately.
-- Errors while work executes are async errors, delivered through an async handler: runtime errors in kernels, allocation failures, host work violations, promise and future misuse.
+- Errors while work executes are async errors, delivered through an async handler as in SYCL: runtime errors in kernels, allocation failures, exceptions thrown by host work, host work violations, promise and future misuse.
 
 ## 12. Reporting
 
@@ -173,7 +178,6 @@ Flagged in 2026-11-02 and never worked out:
 ## 15. Open for research or later discussion
 
 - The exact form of a graph cycle's body and stop condition.
-- Whether a kernel's output ever needs its old contents brought to the device. An undecorated output is fully defined by its kernel; an `inplace` output is not.
 - What a host work submission takes in place of a device.
 - The design of interop work.
-- Cross-graph ordering, an event returned by `run`, better host execution than `std::async`, vendor-native graph cycle lowering: future work as in 2026-11-02.
+- Cross-graph ordering, what `run` returns (probably an event), better host execution than `std::async`, vendor-native graph cycle lowering: future work as in 2026-11-02.
