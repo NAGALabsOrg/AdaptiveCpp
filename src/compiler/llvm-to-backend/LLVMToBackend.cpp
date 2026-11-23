@@ -10,6 +10,7 @@
 // SPDX-License-Identifier: BSD-2-Clause
 #include "hipSYCL/common/debug.hpp"
 #include "hipSYCL/compiler/llvm-to-backend/AddressSpaceInferencePass.hpp"
+#include "hipSYCL/compiler/llvm-to-backend/CompositionStep.hpp"
 #include "hipSYCL/compiler/llvm-to-backend/DeadArgumentEliminationPass.hpp"
 #include "hipSYCL/compiler/llvm-to-backend/GlobalSizesFitInI32OptPass.hpp"
 #include "hipSYCL/compiler/llvm-to-backend/GlobalInliningAttributorPass.hpp"
@@ -335,9 +336,22 @@ bool LLVMToBackendTranslator::prepareIR(llvm::Module &M) {
     std::vector<std::string> InitialOutliningEntrypoints = OutliningEntrypoints;
     for(const auto& FName : FunctionCallSpecializationOutliningEntrypoints)
       InitialOutliningEntrypoints.push_back(FName);
+    // A composition needs its drivers and every body, write and positions
+    // function it names, though none is reachable from the kernel until the
+    // composition step has run.
+    if(Composition.has_value()) {
+      for(const auto& FName : glue::sscp::composition_driver_symbols())
+        InitialOutliningEntrypoints.push_back(FName);
+      for(const auto& FName : Composition->imported_symbols())
+        InitialOutliningEntrypoints.push_back(FName);
+      for(const char* FName : composition_detail::PlaceholderNames)
+        InitialOutliningEntrypoints.push_back(FName);
+    }
     KernelOutliningPass InitialOutlining{InitialOutliningEntrypoints};
     InitialOutlining.run(M, MAM);
     enableModuleStateDumping(M, "initial_outlining", getCompilationIdentifier());
+    if(Composition.has_value())
+      declareCompositionSymbols(M, *Composition);
     // We need to resolve symbols now instead of after optimization, because we
     // may have to reoutline if the code that is linked in after symbol resolution
     // depends on IR constants.
@@ -357,6 +371,35 @@ bool LLVMToBackendTranslator::prepareIR(llvm::Module &M) {
       return false;
     
     enableModuleStateDumping(M, "specialization", getCompilationIdentifier());
+
+    composition_options CompositionOptions;
+    if(Composition.has_value()) {
+      using backend_t = hipsycl::sycl::AdaptiveCpp_jit::compiler_backend;
+      composition_target Target = composition_target::other;
+      switch(static_cast<backend_t>(this->getBackendId())) {
+      case backend_t::host:
+        Target = composition_target::host;
+        break;
+      case backend_t::ptx:
+        Target = composition_target::ptx;
+        break;
+      case backend_t::spirv:
+        Target = composition_target::spirv;
+        break;
+      default:
+        break;
+      }
+      CompositionOptions = composition_options::for_target(Target);
+      HIPSYCL_DEBUG_INFO << "LLVMToBackend: Composing kernel...\n";
+      std::vector<std::string> CompositionErrors;
+      bool Composed =
+          applyComposition(M, *Composition, CompositionErrors, CompositionOptions);
+      for(const auto& E : CompositionErrors)
+        registerError("LLVMToBackend: " + E);
+      if(!Composed)
+        return false;
+      enableModuleStateDumping(M, "composition", getCompilationIdentifier());
+    }
 
     // Process stage 2 reflection calls
     ReflectionFields["compiler_backend"] = this->getBackendId();
@@ -504,6 +547,8 @@ bool LLVMToBackendTranslator::prepareIR(llvm::Module &M) {
       }
     }
     llvm::AlwaysInlinerPass{}.run(M, MAM);
+    if(Composition.has_value() && CompositionOptions.keep_layer_calls)
+      releaseKeptLayerCalls(M);
 
     enableModuleStateDumping(M, "full_optimizations", getCompilationIdentifier());
     

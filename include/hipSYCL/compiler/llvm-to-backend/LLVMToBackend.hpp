@@ -30,6 +30,7 @@
 #include <functional>
 #include "AddressSpaceMap.hpp"
 #include "hipSYCL/compiler/llvm-to-backend/NameHandling.hpp"
+#include "hipSYCL/glue/llvm-sscp/composition.hpp"
 #include "hipSYCL/glue/llvm-sscp/jit-reflection/queries.hpp"
 #include "hipSYCL/runtime/util.hpp"
 
@@ -70,6 +71,13 @@ public:
                              const std::vector<std::string> &ReplacementCalls,
                              bool OverrideOnlyUndefined=true,
                              int IndexParam=-1);
+
+  // The structure of a composed kernel (see glue/llvm-sscp/composition.hpp);
+  // stores a copy. Its symbols become outlining entry points, and the
+  // composition runs after the specialization applicators.
+  void setCompositionConfig(const glue::sscp::composition_config &Config) {
+    Composition = Config;
+  }
 
   void setKnownPtrParamAlignment(const std::string &FunctionName, int ParamIndex, int Alignment);
 
@@ -254,6 +262,7 @@ private:
   // so that resolveExternalSymbols links them.
   std::vector<std::pair<std::string, std::vector<std::string>>> FunctionCallSpecializationTargets;
   std::vector<std::string> Kernels;
+  std::optional<glue::sscp::composition_config> Composition;
 
   std::vector<std::string> Errors;
   

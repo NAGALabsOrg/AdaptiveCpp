@@ -40,6 +40,7 @@
 
 #include "CompilationState.hpp"
 #include "Attributes.hpp"
+#include "hipSYCL/compiler/sg/BodyChecker.hpp"
 
 #include "hipSYCL/common/debug.hpp"
 
@@ -269,9 +270,16 @@ public:
     return true;
   }
 
+  const std::vector<const clang::FunctionDecl*>& getSgBodyEntries() const {
+    return SgBodyEntries;
+  }
+
   bool VisitFunctionDecl(clang::FunctionDecl *f) {
     if(!f)
       return true;
+
+    if(hipsycl::compiler::sg::is_body_entry(f))
+      SgBodyEntries.push_back(f);
     
     this->processFunctionDecl(f);
 
@@ -398,6 +406,7 @@ public:
 private:
   std::unordered_set<clang::FunctionDecl*> MarkedHostDeviceFunctions;
   std::unordered_set<clang::FunctionDecl*> MarkedKernels;
+  std::vector<const clang::FunctionDecl*> SgBodyEntries;
   std::unordered_set<clang::FunctionDecl*> HierarchicalKernels;
 
   std::unordered_set<clang::FunctionDecl*> UserKernels;
@@ -799,7 +808,9 @@ public:
   }
 
   void HandleTranslationUnit(clang::ASTContext& context) override {
-    
+    hipsycl::compiler::sg::check_entries(context, context.getDiagnostics(),
+                                         Visitor.getSgBodyEntries());
+
     CompilationStateManager::getASTPassState().setDeviceCompilation(
         Instance.getSema().getLangOpts().CUDAIsDevice);
 
