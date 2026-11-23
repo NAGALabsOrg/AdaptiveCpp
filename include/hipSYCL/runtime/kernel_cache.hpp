@@ -12,7 +12,9 @@
 #define HIPSYCL_RT_KERNEL_CACHE_HPP
 
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -285,8 +287,9 @@ public:
   template <class Constructor>
   const code_object *get_or_construct_code_object(code_object_id id,
                                                   Constructor &&c) {
-    std::lock_guard<std::mutex> lock{_mutex};
-    return get_or_construct_code_object_impl(id, c);
+    return construct_deduplicated(id, [&]() -> const code_object * {
+      return c();
+    });
   }
 
   /// Obtain or construct code objects. This is for code objects
@@ -314,40 +317,27 @@ public:
                                                       code_object_id id_of_binary,
                                                       JitCompiler &&jit_compile,
                                                       CodeObjectConstructor &&c) {
-    if(auto* code_object = get_code_object(id_of_code_object)) {
-      HIPSYCL_DEBUG_INFO << "kernel_cache: Cache hit for id "
-                         << kernel_configuration::to_string(id_of_code_object) << "\n";
-      return code_object;
-    }
-    HIPSYCL_DEBUG_INFO << "kernel_cache: Cache MISS for id "
-                      << kernel_configuration::to_string(id_of_code_object) << "\n";
-    
-    std::string compiled_binary;
-    // TODO: We might want to allow JIT compilation in parallel at some point
-    std::lock_guard<std::mutex> lock{_mutex};
+    return construct_deduplicated(id_of_code_object, [&]() -> const code_object * {
+      std::string compiled_binary;
 
-    if(!persistent_cache_lookup(id_of_binary, compiled_binary)){
-      if(!jit_compile(compiled_binary))
-        return nullptr;
+      if(!persistent_cache_lookup(id_of_binary, compiled_binary)){
+        if(!jit_compile(compiled_binary))
+          return nullptr;
 
-      if(_is_first_jit_compilation) {
-        _is_first_jit_compilation = false;
-        HIPSYCL_DEBUG_WARNING
-            << "kernel_cache: This application run has resulted in new "
-               "binaries being JIT-compiled. This indicates that the runtime "
-               "optimization process has not yet reached peak performance. You "
-               "may want to run the application again until this warning no "
-               "longer appears to achieve optimal performance."
-            << std::endl;
+        if(_is_first_jit_compilation.exchange(false)) {
+          HIPSYCL_DEBUG_WARNING
+              << "kernel_cache: This application run has resulted in new "
+                 "binaries being JIT-compiled. This indicates that the runtime "
+                 "optimization process has not yet reached peak performance. You "
+                 "may want to run the application again until this warning no "
+                 "longer appears to achieve optimal performance."
+              << std::endl;
+        }
+        persistent_cache_store(id_of_binary, compiled_binary);
       }
-      persistent_cache_store(id_of_binary, compiled_binary);
-    }
-    
-    const code_object* new_object = c(compiled_binary);
-    if(new_object)
-      _code_objects[id_of_code_object] = code_object_ptr{new_object};
-    
-    return new_object;
+
+      return c(compiled_binary);
+    });
   }
 
   // Unload entire cache and release resources to prepare runtime shutdown.
@@ -361,22 +351,61 @@ private:
   
   const code_object* get_code_object_impl(code_object_id id) const;
 
-  template <class Constructor>
-  const code_object *get_or_construct_code_object_impl(code_object_id id,
-                                                  Constructor &&c) {
-    auto* existing_code_object = get_code_object_impl(id);
-    if(existing_code_object) {
-      HIPSYCL_DEBUG_INFO << "kernel_cache: Cache hit for id "
-                         << kernel_configuration::to_string(id) << "\n";
-      return existing_code_object;
+  /// One construction per id, none of it under the global lock.
+  ///
+  /// Construction calls into backend drivers (module loading, program
+  /// builds), whose progress can depend on other threads — threads that may
+  /// themselves need this cache to submit anything at all. So the lock covers
+  /// only lookup, registration of an in-flight construction, and insertion;
+  /// the build itself runs outside it. Threads requesting an id that is
+  /// already being built wait on that construction's future rather than
+  /// starting their own, and different ids build concurrently.
+  template <class Builder>
+  const code_object *construct_deduplicated(code_object_id id,
+                                            Builder &&build) {
+    std::shared_future<const code_object *> pending;
+    std::promise<const code_object *> completion;
+    bool is_builder = false;
+    {
+      std::lock_guard<std::mutex> lock{_mutex};
+      if(auto *existing = get_code_object_impl(id)) {
+        HIPSYCL_DEBUG_INFO << "kernel_cache: Cache hit for id "
+                           << kernel_configuration::to_string(id) << "\n";
+        return existing;
+      }
+      auto it = _in_flight.find(id);
+      if(it != _in_flight.end()) {
+        pending = it->second;
+      } else {
+        HIPSYCL_DEBUG_INFO << "kernel_cache: Cache MISS for id "
+                           << kernel_configuration::to_string(id) << "\n";
+        pending = completion.get_future().share();
+        _in_flight[id] = pending;
+        is_builder = true;
+      }
     }
-    HIPSYCL_DEBUG_INFO << "kernel_cache: Cache MISS for id "
-                      << kernel_configuration::to_string(id) << "\n";
 
-    const code_object* new_object = c();
-    if(new_object) {
-      _code_objects[id] = code_object_ptr{new_object};
+    if(!is_builder)
+      return pending.get();
+
+    const code_object *new_object = nullptr;
+    try {
+      new_object = build();
+    } catch(...) {
+      {
+        std::lock_guard<std::mutex> lock{_mutex};
+        _in_flight.erase(id);
+      }
+      completion.set_value(nullptr);
+      throw;
     }
+    {
+      std::lock_guard<std::mutex> lock{_mutex};
+      if(new_object)
+        _code_objects[id] = code_object_ptr{new_object};
+      _in_flight.erase(id);
+    }
+    completion.set_value(new_object);
     return new_object;
   }
 
@@ -384,8 +413,13 @@ private:
 
   ankerl::unordered_dense::map<code_object_id, code_object_ptr, rt::kernel_id_hash>
       _code_objects;
-  
-  bool _is_first_jit_compilation = true;
+
+  ankerl::unordered_dense::map<code_object_id,
+                               std::shared_future<const code_object *>,
+                               rt::kernel_id_hash>
+      _in_flight;
+
+  std::atomic<bool> _is_first_jit_compilation{true};
 };
 
 namespace detail {
