@@ -61,8 +61,13 @@ add_library(acpp-rt SHARED
   pcuda/pcuda_event.cpp)
 
 target_compile_options(acpp-rt PRIVATE ${HIPSYCL_RT_EXTRA_CXX_FLAGS})
-target_link_libraries(acpp-rt PRIVATE ${HIPSYCL_RT_EXTRA_LINKER_FLAGS} Threads::Threads)
-target_link_libraries(acpp-rt PUBLIC acpp-common)
+target_link_libraries(acpp-rt PRIVATE ${HIPSYCL_RT_EXTRA_LINKER_FLAGS})
+# Threads is PUBLIC because it is part of this target's interface, not only its
+# implementation: generic/async_worker.hpp is a public header and holds a
+# std::thread member, so every consumer that reaches it - the backends do, via
+# dag_submitted_ops.hpp - instantiates std::thread and needs the threads
+# library at link time.
+target_link_libraries(acpp-rt PUBLIC acpp-common Threads::Threads)
 
 # syclcc already knows about these include directories, but clangd-based tooling does not.
 # Specifying them explicitly ensures that IDEs can resolve all hipSYCL includes correctly.
@@ -432,7 +437,10 @@ if(WITH_CPU_BACKEND)
     target_compile_definitions(rt-backend-omp PRIVATE -DHIPSYCL_WITH_SSCP_COMPILER)
     target_link_libraries(rt-backend-omp PRIVATE llvm-to-host)
   endif()
-  target_link_libraries(rt-backend-omp PRIVATE acpp-rt ${OMP_TARGET})
+  # Threads is named here rather than inherited from acpp-rt: omp_code_object.cpp
+  # includes <thread> and calls std::this_thread::get_id() in this target's own
+  # translation units, so the dependency is this target's own.
+  target_link_libraries(rt-backend-omp PRIVATE acpp-rt ${OMP_TARGET} Threads::Threads)
 
   target_compile_options(rt-backend-omp PRIVATE ${HIPSYCL_RT_EXTRA_CXX_FLAGS} ${OMP_COMPILE_FLAGS})
   target_link_libraries(rt-backend-omp PRIVATE ${HIPSYCL_RT_EXTRA_LINKER_FLAGS})

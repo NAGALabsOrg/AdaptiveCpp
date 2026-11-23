@@ -6,6 +6,9 @@ set(ACPP_COMPILER_LAUNCH_RULE_IN_FILE "@PACKAGE_ADAPTIVECPP_INSTALL_LAUNCHER_RUL
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR})
 
+# acpp-rt links Threads::Threads PUBLIC, so consumers need the imported target.
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
 include(adaptivecpp-targets)
 
 set(ACPP_EXTRA_ARGS "${ACPP_EXTRA_ARGS}" CACHE STRING "Arguments to pass through directly to acpp.")
