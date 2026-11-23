@@ -89,14 +89,29 @@ bool isSizeSupportedByBuiltins(llvm::Module& M, llvm::Type* T) {
   return Size == 8 || Size == 16 || Size == 32 || Size == 64;
 }
 
-bool needsBitcastsForIntAtomics(llvm::Module& M, llvm::Type* T) {
-  return isSizeSupportedByBuiltins(M, T) && T->isIntegerTy();
+// The SSCP atomic builtins take and return iN. Values of any other type
+// (float, double, pointers) are converted to iN on the way in, and results
+// back on the way out. Clang 22+ emits `store atomic float` (and float/pointer
+// atomic loads and exchanges) directly instead of integer atomics, so without
+// this a float reaches an i32 parameter and the module is invalid ("Invalid call
+// record" when the JIT reads the kernel bitcode).
+bool needsIntConversion(llvm::Module& M, llvm::Type* T) {
+  return isSizeSupportedByBuiltins(M, T) && !T->isIntegerTy();
 }
 
-llvm::Value *bitcastToIntN(llvm::Module &M, llvm::Value *V, int BitSize,
+llvm::Value *convertToIntN(llvm::Module &M, llvm::Value *V, int BitSize,
                            llvm::Instruction *InsertBefore) {
   auto *TargetType = llvm::IntegerType::get(M.getContext(), BitSize);
+  if (V->getType()->isPointerTy())
+    return new llvm::PtrToIntInst(V, TargetType, "", llvmutils::makeInsertionPoint(InsertBefore));
   return new llvm::BitCastInst(V, TargetType, "", llvmutils::makeInsertionPoint(InsertBefore));
+}
+
+llvm::Value *convertFromIntN(llvm::Value *V, llvm::Type *OrigType,
+                             llvm::Instruction *InsertBefore) {
+  if (OrigType->isPointerTy())
+    return new llvm::IntToPtrInst(V, OrigType, "", llvmutils::makeInsertionPoint(InsertBefore));
+  return new llvm::BitCastInst(V, OrigType, "", llvmutils::makeInsertionPoint(InsertBefore));
 }
 
 llvm::Value* ptrcastToIntNPtr(llvm::Module &M, llvm::Value *V, int BitSize,
@@ -261,9 +276,8 @@ llvm::Value *createAtomicStore(llvm::Module &M, llvm::Value *Value, llvm::Value 
   if(!isSizeSupportedByBuiltins(M, Value->getType()))
     return nullptr;
 
-  if(needsBitcastsForIntAtomics(M, Value->getType())) {
-    auto* TargetType = llvm::IntegerType::get(M.getContext(), BitSize);
-    Value = bitcastToIntN(M, Value, BitSize, InsertBefore);
+  if(needsIntConversion(M, Value->getType())) {
+    Value = convertToIntN(M, Value, BitSize, InsertBefore);
     Addr = ptrcastToIntNPtr(M, Addr, BitSize, InsertBefore);
   }
 
@@ -288,10 +302,9 @@ llvm::Value *createAtomicLoad(llvm::Module &M, llvm::Type* DataType, llvm::Value
   if(!isSizeSupportedByBuiltins(M, DataType))
     return nullptr;
 
-  if(needsBitcastsForIntAtomics(M, DataType)) {
-    auto* TargetType = llvm::IntegerType::get(M.getContext(), BitSize);
+  bool Convert = needsIntConversion(M, DataType);
+  if(Convert)
     Addr = ptrcastToIntNPtr(M, Addr, BitSize, InsertBefore);
-  }
 
   llvm::SmallVector<llvm::Value*> Args {
     getIntConstant(M, address_space::generic_space),
@@ -301,8 +314,9 @@ llvm::Value *createAtomicLoad(llvm::Module &M, llvm::Type* DataType, llvm::Value
   };
 
   llvm::Function *Builtin = getAtomicLoadBuiltin(M, BitSize);
-  return llvm::CallInst::Create(llvm::FunctionCallee(Builtin->getFunctionType(), Builtin),
+  llvm::Value* Call = llvm::CallInst::Create(llvm::FunctionCallee(Builtin->getFunctionType(), Builtin),
                                 llvm::ArrayRef<llvm::Value *>{Args}, "", llvmutils::makeInsertionPoint(InsertBefore));
+  return Convert ? convertFromIntN(Call, DataType, InsertBefore) : Call;
 }
 
 llvm::Value *createAtomicExchange(llvm::Module &M, llvm::Value* Value, llvm::Value *Addr,
@@ -313,9 +327,9 @@ llvm::Value *createAtomicExchange(llvm::Module &M, llvm::Value* Value, llvm::Val
   if(!isSizeSupportedByBuiltins(M, DataType))
     return nullptr;
 
-  if(needsBitcastsForIntAtomics(M, DataType)) {
-    auto* TargetType = llvm::IntegerType::get(M.getContext(), BitSize);
-    Value = bitcastToIntN(M, Value, BitSize, InsertBefore);
+  bool Convert = needsIntConversion(M, DataType);
+  if(Convert) {
+    Value = convertToIntN(M, Value, BitSize, InsertBefore);
     Addr = ptrcastToIntNPtr(M, Addr, BitSize, InsertBefore);
   }
 
@@ -328,8 +342,9 @@ llvm::Value *createAtomicExchange(llvm::Module &M, llvm::Value* Value, llvm::Val
   };
 
   llvm::Function *Builtin = getAtomicExchangeBuiltin(M, BitSize);
-  return llvm::CallInst::Create(llvm::FunctionCallee(Builtin->getFunctionType(), Builtin),
+  llvm::Value* Call = llvm::CallInst::Create(llvm::FunctionCallee(Builtin->getFunctionType(), Builtin),
                                 llvm::ArrayRef<llvm::Value *>{Args}, "", llvmutils::makeInsertionPoint(InsertBefore));
+  return Convert ? convertFromIntN(Call, DataType, InsertBefore) : Call;
 }
 
 llvm::Value *createAtomicCmpExchange(llvm::Module &M, bool IsStrong, llvm::Value *Value,
@@ -341,9 +356,8 @@ llvm::Value *createAtomicCmpExchange(llvm::Module &M, bool IsStrong, llvm::Value
   if(!isSizeSupportedByBuiltins(M, DataType))
     return nullptr;
 
-  if(needsBitcastsForIntAtomics(M, DataType)) {
-    auto* TargetType = llvm::IntegerType::get(M.getContext(), BitSize);
-    Value = bitcastToIntN(M, Value, BitSize, InsertBefore);
+  if(needsIntConversion(M, DataType)) {
+    Value = convertToIntN(M, Value, BitSize, InsertBefore);
     Addr = ptrcastToIntNPtr(M, Addr, BitSize, InsertBefore);
     ExpectedAddr = ptrcastToIntNPtr(M, ExpectedAddr, BitSize, InsertBefore);
   }
