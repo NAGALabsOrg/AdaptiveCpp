@@ -349,6 +349,7 @@ rest
 - conversation: no
 - horizon: now
 - next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and its textual trial merge is clean
+- branch: pr/alloca-alignment-size-name (head 9c902b6d345d)
 
 ```assignment C08
 paths
@@ -375,6 +376,7 @@ rest
 - conversation: no
 - horizon: now
 - next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and the conflict in `omp_queue.hpp` is resolved against b5535e79
+- branch: pr/xcode26-includes (head bf81c80a6801)
 
 ```assignment C09
 paths
@@ -435,6 +437,7 @@ hunks
 - conversation: no
 - horizon: now
 - next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and its textual trial merge is clean
+- branch: pr/pcuda-robustness (head a78cf9316230)
 
 ```assignment C11
 paths
@@ -461,6 +464,7 @@ rest
 - conversation: no
 - horizon: now
 - next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and its textual trial merge is clean
+- branch: pr/ocl-spirv-cl-std (head 1c14f4cf7268)
 
 ```assignment C12
 paths
@@ -486,6 +490,7 @@ rest
 - conversation: no
 - horizon: now
 - next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and its textual trial merge is clean
+- branch: pr/ocl-prefetch-hint (head d91d044e2330)
 
 ```assignment C13
 paths
@@ -509,6 +514,7 @@ paths
 - conversation: no
 - horizon: now
 - next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and its textual trial merge is clean
+- branch: pr/stdpar-atomic-int-builtins (head e9c5d084802e)
 
 ```assignment C14
 paths
@@ -560,6 +566,7 @@ hunks
 - conversation: no
 - horizon: now
 - next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and its textual trial merge is clean
+- branch: pr/kernel-cache-lock (head bd3937a5f568)
 
 ```assignment C16
 rest
@@ -583,6 +590,7 @@ rest
 - conversation: no
 - horizon: now
 - next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and the conflict in `Utils.hpp` is resolved against bce257b0
+- branch: pr/jit-tool-errors (head 9c705d333b5d)
 
 ```assignment C17
 paths
@@ -613,6 +621,7 @@ hunks
 - conversation: no
 - horizon: now
 - next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and its textual trial merge is clean
+- branch: pr/ze-cstdint (head 5283deac3af0)
 
 ```assignment C18
 paths
@@ -636,6 +645,7 @@ paths
 - conversation: no
 - horizon: now
 - next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and its textual trial merge is clean
+- branch: pr/threads-public-link (head eb21034a25ce)
 
 ```assignment C19
 hunks
