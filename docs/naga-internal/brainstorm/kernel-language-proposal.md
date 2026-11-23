@@ -90,3 +90,34 @@ Core items: builder frame kept; structure vs bound values kept (repeat levels, u
 - Fan-ins, tile and window sizes, bin counts and tree fan-ins are runtime arguments: sg::tiles(4), sg::window(64, 1), sg::bin_count(16), kh.reduce_tree(x, 4, op). No sizes as template parameters. Ranks stay in the types; extents are dynamic.
 - They are bound values: changing them never recompiles. Shape errors are reported when the builder runs, naming the node. Constant specialisation, where it pays, is the JIT's (AdaptiveCpp adaptivity), never the user's.
 - Settles open question 6 (launch values). All tiles<K>, window<K, H>, bin_count<16>, reduce_tree<K> in this document read as their runtime forms.
+
+### D3 Elements and tiles are explicit types (Jack, 2026-11-23)
+- `sg::tile(x, k)` turns elements into tiles. A map over tiles always returns tiles, even tiles of one value. `sg::retile(t, k)` regroups tiles. `sg::join(t)` is the only way back to elements. `evaluate` takes elements.
+- Tile size is logical. It coincides with the native group shape only in simple kernels; the native shape follows D1.
+- Generic topology: `sg::gather_tiles(src, shape, positions)`, where `positions(k, s)` returns, for destination tile k and slot s, a source position or `sg::fill(v)`. It is not tied to any algorithm. The builder evaluates it on the host to find which source tiles each destination tile needs (bound data).
+- `sg::subset(t, which)` picks an arbitrary subset of a tile (`sg::last`, index-space forms, masks). `sg::extend_tiles(t, k, how)` reshapes a map argument's tiles to line up with the others (`sg::repeat`).
+- A map with several arguments takes tiled arguments with equal tile counts; their tile shapes are independent. Mismatched counts are a builder error naming the map.
+- Style: algorithms are written one visible step per layer, never compressed into minimal lines.
+- Replaces: kh.node, sg::from and its forms, the modes, and `before`. Names subset, gather_tiles, extend_tiles are placeholders.
+
+Reduction:
+```cpp
+auto x  = kh.source(x_in);                            // 64 elements
+auto l1 = kh.map(sg::tile(x, 4), sum);                // 16 tiles of 1
+auto l2 = kh.map(sg::retile(l1, 4), sum);             // 4 tiles of 1
+auto l3 = sg::join(kh.map(sg::retile(l2, 4), sum));   // 1 element
+total = kh.evaluate(l3);
+```
+
+Scan:
+```cpp
+auto scanned           = kh.map(sg::tile(x, 4), [=](auto t) { return sg::inclusive_scan(t, plus); });  // 4 tiles of 4
+auto overlaps          = kh.map(scanned, [](auto t) { return sg::subset(t, sg::last); });             // 4 tiles of 1
+auto gathered_overlaps = sg::gather_tiles(overlaps, sg::shape(4),
+    [](auto k, auto s) { return s < k ? sg::from_tile(s) : sg::fill(0); });                           // 4 tiles of 4
+auto scanned_overlaps  = kh.map(gathered_overlaps, [=](auto t) { return sg::inclusive_scan(t, plus); });
+auto increments        = kh.map(scanned_overlaps, [](auto t) { return sg::subset(t, sg::last); });    // 4 tiles of 1
+auto y = sg::join(kh.map(scanned, sg::extend_tiles(increments, 4, sg::repeat),
+                         [](auto t, auto inc) { return t + inc; }));                                  // 16 elements
+out = kh.evaluate(y);
+```
