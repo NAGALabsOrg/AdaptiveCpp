@@ -25,7 +25,7 @@ How to read the records:
 | C05 | Dynamic functions across translation units and object formats | other: feature | no | yes | after conversation |
 | C06 | CBS: values carried across barriers and split loops | bug fix | no | yes | after conversation |
 | C07 | SSCP group scans and sub-group ids in work-group reduce | bug fix | no | yes | after conversation |
-| C08 | Keep alloca alignment and size in address-space and aggregate passes | bug fix | no | no | now |
+| C08 | Keep alloca alignment, size and name in address-space and aggregate passes | bug fix | no | no | now |
 | C09 | Include what you use for Xcode 26 libc++ | bug fix | no | no | now |
 | C11 | pcuda robustness and MSVC kernel names | bug fix | no | no | now |
 | C12 | OpenCL: SPIR-V built for the device's OpenCL C version | bug fix | no | no | now |
@@ -332,10 +332,10 @@ rest
   include/hipSYCL/sycl/libkernel/sscp/builtins/detail/reduction.hpp
 ```
 
-## C08 Keep alloca alignment and size in address-space and aggregate passes
+## C08 Keep alloca alignment, size and name in address-space and aggregate passes
 
-- title: Keep alloca alignment and size when rewriting address spaces and expanding aggregate arguments
-- intent: Preserve the alignment and size of allocas in the address-space inference, clspv address-space-cast removal and aggregate-argument expansion passes.
+- title: Keep alloca alignment, size and name when rewriting address spaces and expanding aggregate arguments
+- intent: Preserve the alignment, array size and name (`takeName`) of allocas that the address-space inference and the clspv address-space-cast removal passes replace, and the alignment of the alloca that aggregate-argument expansion creates for a by-value parameter.
 - kind: bug fix
 - secondary: none
 - size: files 3, lines +20 / -3

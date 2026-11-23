@@ -100,4 +100,6 @@ Entry by id (flags, questions, order, horizons and next steps approved as drafte
 | KF6 | approved |
 | KF7 | approved |
 
+Wording fix after Review 2 (system test T2, decided by the Research Lead as a wording correction): C08's title and intent now also cover keeping the alloca's name (`takeName`), which the change already did; no assignment, kind or flag changed.
+
 Unresolved list after Review 2: none.
