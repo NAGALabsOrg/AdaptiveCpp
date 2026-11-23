@@ -253,7 +253,21 @@ inline rt::result compile(compiler::LLVMToBackendTranslator *translator,
     }
   }
 
+  // A composed kernel's body, write and positions functions are defined in the
+  // translation units of the program; import them as well.
+  for(const auto& entry : config.get_composition_configs()) {
+    for(const auto& sym : entry.value->imported_symbols()) {
+      if(std::find(all_imported_symbol_names.begin(),
+                   all_imported_symbol_names.end(),
+                   sym) == all_imported_symbol_names.end())
+        all_imported_symbol_names.push_back(sym);
+    }
+  }
+
   runtime_linker configure_linker {translator, all_imported_symbol_names};
+
+  for(const auto& entry : config.get_composition_configs())
+    translator->setCompositionConfig(*entry.value);
 
   // Apply configuration
   if(translator->getKernels().size() == 1) {

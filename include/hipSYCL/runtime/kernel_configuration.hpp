@@ -27,6 +27,7 @@
 
 #include "hipSYCL/common/stable_running_hash.hpp"
 #include "hipSYCL/glue/llvm-sscp/fcall_specialization.hpp"
+#include "hipSYCL/glue/llvm-sscp/composition.hpp"
 
 
 namespace hipsycl {
@@ -124,6 +125,12 @@ public:
     _function_call_specializations.push_back(config);
   }
 
+  void set_composition_config(
+      int param_index, glue::sscp::composition_config_kernel_property_t config) {
+    _composition_configs.push_back(config);
+    _composition_param_indices.push_back(param_index);
+  }
+
   void set_build_option(kernel_build_option option, const std::string& value) {
     int_or_string ios;
     ios.string_value = value;
@@ -208,6 +215,14 @@ public:
                         &config_id, sizeof(config_id));
     }
 
+    for(int i = 0; i < _composition_configs.size(); ++i) {
+      uint64_t numeric_option_id =
+          static_cast<uint64_t>(_composition_param_indices[i]) | (1ull << 38);
+      uint64_t config_id = _composition_configs[i].value->unique_hash;
+      add_entry_to_hash(result, &numeric_option_id, sizeof(numeric_option_id),
+                        &config_id, sizeof(config_id));
+    }
+
     for(int i = 0; i < _kernel_param_flags.size(); ++i) {
       if(_kernel_param_flags[i] != 0) {
         auto flags = _kernel_param_flags[i];
@@ -241,6 +256,10 @@ public:
 
   const auto& function_call_specialization_config() const {
     return _function_call_specializations;
+  }
+
+  const auto& get_composition_configs() const {
+    return _composition_configs;
   }
 
   bool has_kernel_param_flag(int param_index, kernel_param_flag flag) const {
@@ -319,6 +338,9 @@ private:
   std::vector<std::pair<int, uint64_t>> _specialized_kernel_args;
   std::vector<glue::sscp::fcall_config_kernel_property_t>
       _function_call_specializations;
+  std::vector<glue::sscp::composition_config_kernel_property_t>
+      _composition_configs;
+  std::vector<int> _composition_param_indices;
   std::vector<uint64_t> _kernel_param_flags;
   std::vector<std::pair<int, int>> _known_alignments;
 

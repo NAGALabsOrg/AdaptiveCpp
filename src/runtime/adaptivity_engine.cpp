@@ -13,6 +13,7 @@
 #include "hipSYCL/common/appdb.hpp"
 #include "hipSYCL/glue/llvm-sscp/fcall_specialization.hpp"
 #include "hipSYCL/runtime/allocation_tracker.hpp"
+#include "hipSYCL/runtime/composition_adaptivity.hpp"
 #include "hipSYCL/runtime/kernel_configuration.hpp"
 #include "hipSYCL/glue/llvm-sscp/jit.hpp"
 #include "hipSYCL/runtime/application.hpp"
@@ -201,6 +202,7 @@ kernel_configuration::id_type
 kernel_adaptivity_engine::finalize_binary_configuration(
     kernel_configuration &config) {
     
+  bool composed = false;
   // At any adaptivity level need to handle function call specializations.
   for (int i = 0; i < _kernel_info->get_num_parameters(); ++i) {
     auto &annotations = _kernel_info->get_known_annotations(i);
@@ -213,8 +215,21 @@ kernel_adaptivity_engine::finalize_binary_configuration(
         std::memcpy(&value, _arg_mapper.get_mapped_args()[i], arg_size);
         config.set_function_call_specialization_config(i, value);
       }
+      if (annotation ==
+              hcf_kernel_info::annotation_type::composition_config &&
+          arg_size == sizeof(glue::sscp::composition_config_kernel_property_t)) {
+        glue::sscp::composition_config_kernel_property_t value;
+        std::memcpy(&value, _arg_mapper.get_mapped_args()[i], arg_size);
+        configure_composition_kernel(config, i, value, std::string{_kernel_name},
+                                     _local_mem_size);
+        composed = true;
+      }
     }
   }
+
+  // A composed kernel takes nothing launch-specific into its configuration.
+  if(composed)
+    return config.generate_id();
 
   if(_adaptivity_level > 0) {
     // Enter single-kernel code model
@@ -402,7 +417,13 @@ kernel_adaptivity_engine::finalize_binary_configuration(
 
 std::string kernel_adaptivity_engine::select_image_and_kernels(
     std::vector<std::string> *kernel_names_out) {
-  if(_adaptivity_level > 0) {
+  bool composed = false;
+  for (int i = 0; i < _kernel_info->get_num_parameters(); ++i)
+    for (auto annotation : _kernel_info->get_known_annotations(i))
+      if (annotation == hcf_kernel_info::annotation_type::composition_config)
+        composed = true;
+
+  if(_adaptivity_level > 0 || composed) {
     *kernel_names_out = std::vector{std::string{_kernel_name}};
 
     std::vector<std::string> all_kernels_in_image;

@@ -116,7 +116,8 @@ public:
   enum annotation_type {
     specialized,
     fcall_specialized_config,
-    noalias
+    noalias,
+    composition_config
   };
 
   std::size_t get_argument_offset(std::size_t i) const;
