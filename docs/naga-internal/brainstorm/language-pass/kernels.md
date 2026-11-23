@@ -1,6 +1,6 @@
 # Language pass: kernel records
 
-Each record: problem and reference (plain sequential code), derivation in problem terms, code (one primitive application per line, named intermediates), native work-groups, placement with rule ids (record.md section 1), trace. Corrections from the early check X1-X4 apply to every record; basis: definitions v3, Q2 = a, Q3 = b, Q5-Q9 at their defaults.
+Each record: problem and reference (plain sequential code), derivation in problem terms, code (one primitive application per line, named intermediates), native work-groups, placement with rule ids (record.md section 1), trace. Corrections from the early check X1-X4 apply to every record; basis: definitions v3, Q2 = a, Q3 = b, Q5, Q6, Q8, Q9 answered (D13, D14).
 
 ## Common definitions
 
@@ -144,6 +144,7 @@ y_out = kh.evaluate(y_elems);
 
 Work-groups: 16 groups of {64, 3} = 192 work-items. No pulls of results.
 Placement: x global input; windows view over x (D4); values value; y result memory.
+Alternative (W14): kh.mark_local(windows, work) when the windows are viewed as array tiles of x; each work tile then holds its 64 windows' inputs in local memory.
 Trace: y[0] = 0 + 0 + 1 = 1; y[1] = 0 + 1 + 2 = 3; y[1023] = 1022 + 1023 + 0 = 2045.
 
 ## K5 Gather from values computed in the kernel
@@ -241,44 +242,25 @@ Segmented form, keeping Jack's 16 x 16 outputs per work tile:
 ```cpp
 auto run     = sg::segment_items(32, 4);                          // 128 items in 32 segments of 4
 auto work    = kh.work_tiles({8, 8}, {16, 16}, run);              // 64 tiles x 32 segments = 2048 groups of 16 x 16 x 4
-auto a_work  = kh.slice_work(work, {0, 0}, {8, 8}, {1, 1}, {16}, run);
-auto a_stage = kh.map_work(a_work, [=](auto unit) {
+kh.mark_local(a_bands, work);                                     // each work tile's segments hold their A band locally
+kh.mark_local(b_bands, work);                                     // ... and their B band
+auto C_tiles = kh.map_work(work, [=](auto unit) {
   auto t      = unit.tile();
   auto u      = unit.id();
   auto a_band = a_bands[{t[0], 0}];
-  auto a_row  = sg::slice(a_band, {u[0], 0}, {1, 128});
-  auto a_run  = sg::flatten(a_row);
-  return unit.run_distributed(a_run, pass_items);
-});                                                               // 8 x 8 result tiles of {16, 128}
-kh.mark_local<sg::segmented>(a_stage);
-auto b_work  = kh.slice_work(work, {0, 0}, {8, 8}, {1, 1}, {16}, run);
-auto b_stage = kh.map_work(b_work, [=](auto unit) {
-  auto t      = unit.tile();
-  auto u      = unit.id();
   auto b_band = b_bands[{0, t[1]}];
-  auto b_col  = sg::slice(b_band, {0, u[0]}, {128, 1});
+  auto a_row  = sg::slice(a_band, {u[0], 0}, {1, 128});
+  auto b_col  = sg::slice(b_band, {0, u[1]}, {128, 1});
+  auto a_run  = sg::flatten(a_row);
   auto b_run  = sg::flatten(b_col);
-  return unit.run_distributed(b_run, pass_items);
-});                                                               // 8 x 8 result tiles of {16, 128}
-kh.mark_local<sg::segmented>(b_stage);
-auto C_tiles = kh.map_work(work, [=](auto unit) {
-  auto t     = unit.tile();
-  auto u     = unit.id();
-  auto my_a  = a_stage[t];
-  auto my_b  = b_stage[t];
-  auto a_row = sg::slice(my_a, {u[0], 0}, {1, 128});
-  auto b_row = sg::slice(my_b, {u[1], 0}, {1, 128});
-  auto a_run = sg::flatten(a_row);
-  auto b_run = sg::flatten(b_row);
   return unit.run_distributed(a_run, b_run, dot_items);
 });                                                               // 8 x 8 result tiles of {16, 16}
 auto C_elems = kh.join(C_tiles);
 C_out = kh.evaluate(C_elems);
 ```
 
-Work-groups: 2048 groups of {16, 16, 4} = 1024; the stages use 64 work-items of each segment. Item p of a product run and item p of a stage run fall in the same segment (p / 4), so the segmented stages are pulled within their segment (W12). The reduce in dot_items is joined across 32 segments: the last segment waits on the others' partials (global, W12).
-Placement: A, B global inputs; a_stage, b_stage segmented local (W12, P14); per-segment partials global; C result memory.
-Run mode: the stages run distributed (item p of the product reads stage position p, in its own segment); run_replicated would give every segment all 128 positions at 32 x the stage work.
+Work-groups: 2048 groups of {16, 16, 4} = 1024. Each segment's group populates its own copy of its tile's A band and B band (W14; 16 x 128 each); no staging map. The reduce in dot_items is joined across 32 segments (global, W12).
+Placement: A, B global inputs; a_bands, b_bands local per segment (W14); products registers; per-segment partials global; C result memory.
 Trace: C[3][5]: work tile (0, 0), unit (3, 5); a_stage row 3 is A row 3 (all 3s), b_stage row 5 is B column 5 (all 5s); 32 segment partials of 4 x 15 = 60 each, joined 1920. C[127][127] = 2064512.
 
 ## K7 Histogram, 4096 values, 16 bins
@@ -369,41 +351,44 @@ Trace: i = 0: b = 1, c = 0, d = 1, f(0, 0) = e(3, 0) = 2 x 12 + 1001 = 1025; i =
 Reference: `y = x; repeat 4 times: y = 2y + 1;` x[i] = i, n = 64: 16i + 15; i = 0: 15, i = 4: 79.
 
 ```cpp
-auto step_items = [=](auto item, auto v) { return 2 * v + 1; };
-auto x       = kh.source(x_in);                                   // 64 elements
-auto x_tiles = kh.tile(x, {64});                                  // 1 tile of 64
-auto work    = kh.work_tiles({1}, {1}, 64);                       // 1 group
-auto y       = per_tile(kh, work, x_tiles, step_items);           // 1 result tile of {1, 64}
+auto step_fn = [](float v) { return 2 * v + 1; };
+auto x     = kh.source(x_in);                                     // 64 elements
+auto items = kh.work_items({64});                                 // 64 native work-items, no groups
+auto y = kh.map_items(items, [=](auto item) {
+  auto v = x[item.id()];
+  return item.compute(v, step_fn);
+});                                                               // result array of 64
 for (int k = 1; k < 4; ++k) {
-  auto prev = kh.retile(y, {64});
-  y = per_tile(kh, work, prev, step_items);
+  auto prev = y;
+  y = kh.map_items(items, [=](auto item) {
+    auto v = prev[item.id()];                                     // own index only (W13)
+    return item.compute(v, step_fn);
+  });
 }
-auto y_rows  = kh.retile(y, {64});
-auto y_elems = kh.join(y_rows);
-y_out = kh.evaluate(y_elems);
+y_out = kh.evaluate(y);
 ```
 
-Work-groups: 1 group of {1, 64}; each step on the same work tile. Placement: every intermediate value (own unit, W2). Trace: 2i + 1, 4i + 3, 8i + 7, 16i + 15.
+Work-items: one range launch of 64. Placement: each step's value in registers (own index, W13). Trace: 2i + 1, 4i + 3, 8i + 7, 16i + 15.
 
 ## K10 Run-time-declared component
 
 Reference: `y[i] = a * x[i] + b;` for inputs and n named at run time.
 
 ```cpp
-auto axb_items = [=](auto item, auto v) { return a * v + b; };   // a, b run-time values
-auto x_in    = ins.get<float, 1>("x");                            // declared at run time
-auto x       = kh.source(x_in);                                   // n elements
-auto x_tiles = kh.tile(x, {256});                                 // n/256 tiles (n divisible, Q6)
-auto count   = x_tiles.count();
-auto work    = kh.work_tiles({count}, {1}, 256);
-auto y       = per_tile(kh, work, x_tiles, axb_items);            // n/256 result tiles of {1, 256}
-auto y_rows  = kh.retile(y, {256});
-auto y_elems = kh.join(y_rows);
-outs.set("y", kh.evaluate(y_elems));
+auto axb_fn = [=](float v) { return a * v + b; };                 // a, b run-time values
+auto x_in   = ins.get<float, 1>("x");                             // declared at run time
+auto x      = kh.source(x_in);                                    // n elements
+auto items  = kh.work_items({n});
+auto y = kh.map_items(items, [=](auto item) {
+  auto v = x[item.id()];
+  return item.compute(v, axb_fn);
+});
+outs.set("y", kh.evaluate(y));
 ```
 
-Work-groups: n/256 groups of {1, 256}, bound. Placement: values; y result memory.
-Trace: (a, b, n) = (2, 1, 256): y[3] = 7; (-1, 0.5, 512): y[10] = -9.5.
+Work-tile variant with any n (W15): `kh.tile(x, {256}, sg::fill{0.f})` gives ceil(n/256) tiles; the partial last tile is padded; `kh.join` trims back to n.
+
+Work-items: one range launch of n. Trace: (2, 1, 256): y[3] = 7; (-1, 0.5, 512): y[10] = -9.5; tiled variant, n = 300: 2 tiles, y[299] = a * 299 + b, join gives 300.
 
 ## K11 Inplace contributions
 
@@ -411,17 +396,17 @@ Reference: two kernels add 1 and 2 per element into y (initializer 0, plus): 3 e
 
 ```cpp
 // in each of two submissions, out = sg::array<sg::result<float>, 1>(sg::inplace(y_handle, plus, 0), sg::shape<1>({64}))
-auto scale_items = [=](auto item, auto v) { return k * v; };     // k = 1, then 2
-auto ones        = kh.source(ones_in);                            // 64 ones
-auto ones_tiles  = kh.tile(ones, {64});
-auto work        = kh.work_tiles({1}, {1}, 64);
-auto c           = per_tile(kh, work, ones_tiles, scale_items);
-auto c_rows      = kh.retile(c, {64});
-auto c_elems     = kh.join(c_rows);
-out = kh.evaluate(c_elems);
+auto scale_fn = [=](float v) { return k * v; };                  // k = 1, then 2
+auto ones     = kh.source(ones_in);                               // 64 ones
+auto items    = kh.work_items({64});
+auto c = kh.map_items(items, [=](auto item) {
+  auto v = ones[item.id()];
+  return item.compute(v, scale_fn);
+});
+out = kh.evaluate(c);
 ```
 
-Work-groups: 1 group of {1, 64} per submission. Placement: values; the two contributions combine element by element (B2).
+Work-items: one range launch of 64 per submission. Placement: values; the two contributions combine element by element (B2).
 Trace: 0 + 1 + 2 = 3 at elements 0 and 63.
 
 ## K12 Interpolation

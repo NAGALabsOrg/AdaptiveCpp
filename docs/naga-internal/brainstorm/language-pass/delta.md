@@ -20,3 +20,10 @@ Your correction: fitting the cap happens only at construction.
 - One marking API: `kh.mark_local(r)`, with a mode. The default is for unsegmented work and for results of `run_replicated` (the whole result in every segment).
 - Results of `run_distributed` require `kh.mark_local<sg::segmented>(r)`: you state that the local memory is per segment. The plain form there is an error when the builder runs, telling you to write the segmented form; the segmented form on anything else is also an error.
 - `kh.mark_segmented_local` from round 2 is gone. The matrix product's stages now read `kh.mark_local<sg::segmented>(a_stage)`.
+
+## Round 4 (D13, D14): summary v5
+- Shorter runs on a work set: allowed; the result tile's run dimension follows the run used.
+- `kh.tile(x, shape, oob)`: a partial last tile is padded by the oob policy; join trims back to the array's extent.
+- Work-item kernels: `kh.work_items(range)`, `kh.map_items(items, body(item))`, `item.compute(inputs..., fn)`. A plain range launch; each item reads inputs and only its own earlier results; a kernel uses work tiles or work items, never both. The element-wise chain, the run-time component and inplace contributions are now work-item kernels.
+- `kh.mark_local(array_tiles, work)`: array tiles held locally by every work tile (every segment) that pulls them. The matrix product drops its staging maps.
+- No decisions remain open.
