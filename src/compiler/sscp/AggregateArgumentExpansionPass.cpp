@@ -185,7 +185,12 @@ void ExpandAggregateArguments(llvm::Module &M, llvm::Function &F,
       if(EI.IsExpanded) {
         // We need to reconstruct the aggregate that was decomposed.
         // First, allocate some memory
-        auto* Alloca = new llvm::AllocaInst(EI.OriginalByValType, 0, "", BB);
+        // Reconstructing a byval aggregate: keep at least the alignment the original
+        // parameter promised (byval/align), not just the type's ABI alignment.
+        llvm::Align AllocaAlign = M.getDataLayout().getPrefTypeAlign(EI.OriginalByValType);
+        if(auto ParamAlign = F.getParamAlign(i))
+          AllocaAlign = std::max(AllocaAlign, *ParamAlign);
+        auto* Alloca = new llvm::AllocaInst(EI.OriginalByValType, 0, nullptr, AllocaAlign, "", BB);
         // Iterate over all elements that the aggregate was expanded into:
         for(int j = 0; j < EI.NumExpandedArguments; ++j) {
           // Create getelementptr instruction to offset into the allocated struct

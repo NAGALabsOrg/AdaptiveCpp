@@ -261,7 +261,11 @@ bool fixupAllocas(llvm::Function &F) {
 
         if (StoreType->getAddressSpace() != AllocPtrType->getAddressSpace()) {
           llvm::IRBuilder Builder(Alloca);
-          auto NewAlloca = Builder.CreateAlloca(StoreType);
+          // Keep the old alloca's array size, alignment and name.
+          // (alloca address space: the data layout's default, as before)
+          auto NewAlloca = Builder.CreateAlloca(StoreType, Alloca->getArraySize());
+          NewAlloca->setAlignment(std::max(NewAlloca->getAlign(), Alloca->getAlign()));
+          NewAlloca->takeName(Alloca);
           Alloca->replaceAllUsesWith(NewAlloca);
           InstsToDel.push_back(Alloca);
         }

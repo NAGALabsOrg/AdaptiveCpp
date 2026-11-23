@@ -125,7 +125,15 @@ llvm::PreservedAnalyses AddressSpaceInferencePass::run(llvm::Module &M,
             HIPSYCL_DEBUG_INFO << "AddressSpaceInferencePass: Found alloca in address space "
                                << AI->getAddressSpace() << " when it should be in AS "
                                << AllocaAddrSpace << ", fixing.\n";
-            auto *NewAI = new llvm::AllocaInst{AI->getAllocatedType(), AllocaAddrSpace, "", llvmutils::makeInsertionPoint(AI)};
+            // Keep array size and alignment: dropping the alignment would fall back to
+            // the type's ABI alignment, while users (e.g. memcpy with align 32 on a
+            // vec<float,8> temporary) still rely on the original, larger alignment.
+            auto *NewAI = new llvm::AllocaInst{AI->getAllocatedType(), AllocaAddrSpace,
+                                               AI->getArraySize(), AI->getAlign(), "",
+                                               llvmutils::makeInsertionPoint(AI)};
+            // takeName: the new alloca gets AI's name now (AI is erased later) without
+            // LLVM appending a uniquing suffix.
+            NewAI->takeName(AI);
             auto* ASCastInst = new llvm::AddrSpaceCastInst{NewAI, AI->getType(), "", llvmutils::makeInsertionPoint(AI)};
 
             // llvm.lifetime intrinsics don't like addrspacecasts,
