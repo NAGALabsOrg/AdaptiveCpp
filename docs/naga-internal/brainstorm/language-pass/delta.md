@@ -15,3 +15,8 @@ Your correction: fitting the cap happens only at construction.
 - Its results are marked local only with `kh.mark_segmented_local(r)`, held as the run produced them: the whole result in every segment if replicated, each segment's share if distributed.
 - The builder rejects `run_replicated` whose input is a distributed result of its own set.
 - Matrix product and row sums now say `run_distributed`; nothing else in them changed.
+
+## Round 3 (D12): summary v4
+- One marking API: `kh.mark_local(r)`, with a mode. The default is for unsegmented work and for results of `run_replicated` (the whole result in every segment).
+- Results of `run_distributed` require `kh.mark_local<sg::segmented>(r)`: you state that the local memory is per segment. The plain form there is an error when the builder runs, telling you to write the segmented form; the segmented form on anything else is also an error.
+- `kh.mark_segmented_local` from round 2 is gone. The matrix product's stages now read `kh.mark_local<sg::segmented>(a_stage)`.

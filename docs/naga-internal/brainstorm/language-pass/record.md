@@ -30,7 +30,7 @@ Sources: docs/naga-internal/brainstorm/kernel-model.md ("Agreed" 2-6), note sg-r
 | W9 | The run is an extra dimension: native group shape = tile shape ++ run; at most 3-D; a 3-D tile has a run of one item and no run argument. | D7 X4 |
 | W10 | What users share is how they think about the problem; the language does not enforce it. | D7 X5 |
 | W11 | Pulls form a dependency graph between tiles: an edge from each pulled tile to the tile that pulls it; a pull the host cannot see (a tile chosen from kernel data) is an edge from every tile of the source work set. Each native group runs its tasks (its tile of a set, then any slice tasks) in map order. The toolchain orders the native groups so that every edge comes from an earlier group or an earlier task of the same group; if no order exists the builder rejects the kernel, naming the tiles on the cycle, and the user breaks it with another work set. So data-chosen pulls only ever go from one work set to another. | D9 |
-| W12 | A segmented work tile is one native group per segment, each of tile shape x items per segment. A segmented work set is its own type: units run_distributed (collectives joined across segments with a global dependency, edges from earlier segments in the tile graph) or run_replicated (every segment runs the whole run, collectives stay in the group); results are marked local with kh.mark_segmented_local, held as the run produced them; run_replicated is rejected if its input is a distributed result of its own set. | D10, D11 |
+| W12 | A segmented work tile is one native group per segment, each of tile shape x items per segment. A segmented work set is its own type: units run_distributed (collectives joined across segments with a global dependency, edges from earlier segments in the tile graph) or run_replicated (every segment runs the whole run, collectives stay in the group); results are marked local with kh.mark_local: the default form for replicated results (the whole result in every segment), the <sg::segmented> form, required, for distributed results (each segment its share); each form is an error on the other kind of result; run_replicated is rejected if its input is a distributed result of its own set. | D10, D11, D12 |
 
 ## 2. Glossary
 
@@ -57,7 +57,7 @@ Sources: docs/naga-internal/brainstorm/kernel-model.md ("Agreed" 2-6), note sg-r
 | P11 | sg::slice(tile, offset, extent) | tile, shapes | tile view | host view | W6 | the part of the tile at offset with extent |
 | P12 | sg::reduce(item, v, op) | item, value, op | one value | device collective | M3 | v combined over all items of the run with op |
 | P13 | sg::inclusive_scan(item, v, op) | item, value, op | per-item value | device collective | M3 | v combined over items 0 to this one |
-| P14 | kh.mark_local(result) | result tiles | | host | W3, W2 | held in local memory for other units of the same work tile |
+| P14 | kh.mark_local<Mode = default>(result) | result tiles | | host | W3, W2, W12 | holds the result in local memory for other units of the same work tile; on a segmented work set the default mode applies to replicated results (whole result per segment) and Mode = sg::segmented is required for distributed results (each segment its share); the wrong mode is a builder error |
 | P15 | kh.slice_work(work, offset, extent, stride, tile_shape, run) | work set, shapes | work set | host | W1, W11 | the tiles offset + k * stride (k < extent) of work, reused on their groups, with a new tile shape and run that fit the group size; launches no groups, run a count or sg::segment_items |
 | P16 | kh.define_tiles(tiles, shape, fn) | counts, host function | index tiles | host | D4 | tile t, slot s holds fn(t, s) |
 | P17 | kh.index_map(map, oob, elements) | index tiles, policy, elements | tiles view | host | D4, W5 | each index replaced by that element; out-of-range indices go to oob |
@@ -67,7 +67,6 @@ Sources: docs/naga-internal/brainstorm/kernel-model.md ("Agreed" 2-6), note sg-r
 | P21 | sg::segment_items(segments, items) | counts | a run argument | host | W12 | a run of segments x items items in segments of items, each segment its own native group |
 | P22 | sg::tile_bin(item, v, bins, key) | item, value, count, device function | per-item count | device collective | D5, M3 | item b < bins gets the number of v in the run with key(v) == b; the result is a run of bins values (bins at most the run length) |
 | P23 | kh.stencil(offsets, roots) | offsets, a range | index tiles | host | D4 | one tile per root, holding root + each offset |
-| P24 | kh.mark_segmented_local(result) | result tiles of a segmented work set | | host | W12, W3 | holds the result in local memory: the whole result in every segment if produced replicated, each segment's share if distributed |
 | P25 | unit.run_distributed(inputs..., fn) | as P07 | the unit's result | host call, fn device | W12 | on a segmented work set: each segment runs its share of the run; collectives join across segments |
 | P26 | unit.run_replicated(inputs..., fn) | as P07 | the unit's result | host call, fn device | W12 | on a segmented work set: every segment runs the whole run, item k taking positions k, k + items, ...; collectives stay in the group |
 
@@ -77,6 +76,7 @@ Changelog:
 - v3 2026-11-23 (D8 and the pass): P15 kh.slice_work added (W1, D8); P21 kh.split_runs added (F11); P22, P23 defined at first use; P04 requires equal ranks (F9); P20 clarified (bound counts per iteration, meaning unchanged); P02 divisibility (Q6). No meaning of a primitive used by an earlier record was changed except by Jack's corrections X1-X4.
 - v4 2026-11-23 (D10): kh.split_runs withdrawn (P21 is now sg::segment_items); P24 kh.mark_segmented_local added; P05, P15 take segmented runs; P14 kh.mark_local is rejected on segmented work tiles.
 - v5 2026-11-23 (D11): segmented work sets are their own type; P25 unit.run_distributed and P26 unit.run_replicated added; unit.run (P07) and kh.mark_local (P14) do not exist on them; P24 renamed kh.mark_segmented_local and holds results as their run produced them.
+- v6 2026-11-23 (D12): P24 kh.mark_segmented_local withdrawn; P14 kh.mark_local takes a mode, sg::segmented required on distributed results.
 
 ## 4. Mechanisms
 
@@ -161,5 +161,6 @@ Each option was traced on a dependent kernel: Q5b K3 with a 16-group totals set 
 | C4 | 2026-11-23 | final page | see summary.md | 5 (Q5-Q9) | correction: segmented runs at construction (D10); delta page |
 | C5 | 2026-11-23 | in conversation | | 0 | the tile-graph rule (D9), replacing D8's run-time contract |
 | C6 | 2026-11-23 | delta page | see delta.md | 0 new (4 remaining) | correction: segmented work sets as their own type, run_distributed / run_replicated (D11) |
-| C7 | 2026-11-23 | delta page, round 2 | see delta.md | 0 new (4 remaining) | pending |
+| C7 | 2026-11-23 | delta page, round 2 | see delta.md | 0 new (4 remaining) | correction: one kh.mark_local with a segmented mode (D12) |
+| C8 | 2026-11-23 | delta page, round 3 | see delta.md | 0 new (4 remaining) | pending |
 Total questions put: 11 (Q7 withdrawn).

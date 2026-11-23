@@ -250,7 +250,7 @@ auto a_stage = kh.map_work(a_work, [=](auto unit) {
   auto a_run  = sg::flatten(a_row);
   return unit.run_distributed(a_run, pass_items);
 });                                                               // 8 x 8 result tiles of {16, 128}
-kh.mark_segmented_local(a_stage);
+kh.mark_local<sg::segmented>(a_stage);
 auto b_work  = kh.slice_work(work, {0, 0}, {8, 8}, {1, 1}, {16}, run);
 auto b_stage = kh.map_work(b_work, [=](auto unit) {
   auto t      = unit.tile();
@@ -260,7 +260,7 @@ auto b_stage = kh.map_work(b_work, [=](auto unit) {
   auto b_run  = sg::flatten(b_col);
   return unit.run_distributed(b_run, pass_items);
 });                                                               // 8 x 8 result tiles of {16, 128}
-kh.mark_segmented_local(b_stage);
+kh.mark_local<sg::segmented>(b_stage);
 auto C_tiles = kh.map_work(work, [=](auto unit) {
   auto t     = unit.tile();
   auto u     = unit.id();
