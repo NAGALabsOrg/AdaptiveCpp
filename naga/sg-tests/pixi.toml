@@ -1,0 +1,23 @@
+[package]
+name = "naga-sg-tests"
+version = "0.1.0"
+
+[package.build.backend]
+name = "pixi-build-cmake"
+version = "*"
+channels = ["https://prefix.dev/pixi-build-backends", "https://prefix.dev/conda-forge"]
+
+[package.build.config]
+compilers = []
+extra-input-globs = ["**/*.hpp", "**/*.cpp", "lit/**/*"]
+
+[package.build-dependencies]
+naga-acpp-clangxx_linux-64 = { workspace = true }
+
+[package.host-dependencies]
+naga-acpp = { workspace = true }
+naga-acpp-llvm-dev = { workspace = true }
+libboost-devel = "*"
+
+[package.run-dependencies]
+libboost = "*"

@@ -24,6 +24,7 @@ level-zero-devel = ["1.29"]
 level-zero = ["1.29"]
 
 [workspace.dependencies]
+naga-sg-tests = { path = "naga/sg-tests" }
 naga-acpp-core = { path = "packages/core" }
 naga-acpp-llvm = { path = "packages/extras/mutex" }
 naga-acpp-runtime-cuda = { path = "packages/extras/runtime-cuda" }
@@ -127,6 +128,53 @@ fd-find = "*"
 gdb = "*"
 rattler-build = ">=0.72"
 
+# sg graph toolchain tests: the separate source package naga/sg-tests, built
+# against the naga-acpp packages, plus lit for the compile-fail suite.
+[feature.sg-tests.dependencies]
+naga-sg-tests = { workspace = true }
+lit = "*"
+nushell = ">=0.106"
+
+[feature.sg-tests.tasks.sg-test-host]
+cmd = "nu naga/tasks/sg-test-run.nu host"
+description = "sg: host-pure unit tests"
+
+[feature.sg-tests.tasks.sg-test-omp]
+cmd = "nu naga/tasks/sg-test-run.nu omp"
+description = "sg: device tests, OpenMP"
+
+[feature.sg-tests.tasks.sg-test-cuda]
+cmd = "nu naga/tasks/sg-test-run.nu cuda"
+description = "sg: device tests, omp;cuda"
+
+[feature.sg-tests.tasks.sg-test-ocl]
+cmd = "nu naga/tasks/sg-test-run.nu ocl"
+description = "sg: device tests, OpenCL"
+
+[feature.sg-tests.tasks.sg-test-ze]
+cmd = "nu naga/tasks/sg-test-run.nu ze"
+description = "sg: device tests, Level Zero"
+
+[feature.sg-tests.tasks.sg-test-lit]
+cmd = "nu naga/tasks/sg-test-run.nu lit"
+description = "sg: lit compile-fail and compile-pass suite"
+
+[feature.sg-tests.tasks.sg-jit-measure]
+cmd = "nu naga/tasks/sg-jit-measure.nu"
+description = "sg: cold before/after measurement of sg_jit_bench over backends and cases"
+
+[feature.sg-tests.tasks.sg-jit-report]
+cmd = "nu naga/tasks/sg-jit-report.nu"
+description = "sg: render the before/after comparison of two sg-jit-measure runs"
+
+[feature.sg-tests.tasks.sg-jit-lib-test]
+cmd = "nu naga/tasks/tests/sg-jit-lib.test.nu"
+description = "sg: unit tests of the measurement library"
+
+[feature.sg-tests.tasks.sg-test]
+cmd = "nu naga/tasks/sg-test-run.nu all"
+description = "sg: every cell, no stop at first failure; logs under ~/logs/acpp-fork/sg-tests-<timestamp>/"
+
 # Scratch environments of check-packages: the activation alone, and the bare toolchain alone.
 [feature.check-activation.dependencies]
 naga-acpp-clangxx_linux-64 = { workspace = true }
@@ -152,6 +200,7 @@ setup-git = "git config core.hooksPath .project/hooks"
 [environments]
 dev = { features = ["dev"], no-default-feature = true }
 git = { features = ["git"], no-default-feature = true }
+sg-tests = { features = ["sg-tests"] }
 check-activation = { features = ["check-activation"], no-default-feature = true }
 check-bare = { features = ["check-bare"], no-default-feature = true }
 check-consumer = { features = ["check-consumer"], no-default-feature = true }

@@ -1,0 +1,14 @@
+// RUN: not %acpp %s 2>&1 | FileCheck %s
+#include "hipSYCL/sg/sg.hpp"
+
+void build(sg::kernel_handle &kh) {
+  kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), [](sg::item<1> it) {
+    int i = 0;
+    do {
+      ++i;
+    } while (i < 3);
+    return i + int(it.id()[0]);
+  });
+}
+// CHECK: error: sg: loop:
+// CHECK: note: in the body defined here
