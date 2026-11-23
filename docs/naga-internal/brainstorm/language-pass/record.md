@@ -30,7 +30,7 @@ Sources: docs/naga-internal/brainstorm/kernel-model.md ("Agreed" 2-6), note sg-r
 | W9 | The run is an extra dimension: native group shape = tile shape ++ run; at most 3-D; a 3-D tile has a run of one item and no run argument. | D7 X4 |
 | W10 | What users share is how they think about the problem; the language does not enforce it. | D7 X5 |
 | W11 | Pulls form a dependency graph between tiles: an edge from each pulled tile to the tile that pulls it; a pull the host cannot see (a tile chosen from kernel data) is an edge from every tile of the source work set. Each native group runs its tasks (its tile of a set, then any slice tasks) in map order. The toolchain orders the native groups so that every edge comes from an earlier group or an earlier task of the same group; if no order exists the builder rejects the kernel, naming the tiles on the cycle, and the user breaks it with another work set. So data-chosen pulls only ever go from one work set to another. | D9 |
-| W12 | A segmented work tile is one native group per segment, each of tile shape x items per segment. Segmenting is a contract: collectives over the run are joined across segments with a global dependency (edges from earlier segments in the tile graph), and local memory is segmented (kh.mark_local_segmented), held per segment; plain kh.mark_local does not apply. | D10 |
+| W12 | A segmented work tile is one native group per segment, each of tile shape x items per segment. A segmented work set is its own type: units run_distributed (collectives joined across segments with a global dependency, edges from earlier segments in the tile graph) or run_replicated (every segment runs the whole run, collectives stay in the group); results are marked local with kh.mark_segmented_local, held as the run produced them; run_replicated is rejected if its input is a distributed result of its own set. | D10, D11 |
 
 ## 2. Glossary
 
@@ -67,13 +67,16 @@ Sources: docs/naga-internal/brainstorm/kernel-model.md ("Agreed" 2-6), note sg-r
 | P21 | sg::segment_items(segments, items) | counts | a run argument | host | W12 | a run of segments x items items in segments of items, each segment its own native group |
 | P22 | sg::tile_bin(item, v, bins, key) | item, value, count, device function | per-item count | device collective | D5, M3 | item b < bins gets the number of v in the run with key(v) == b; the result is a run of bins values (bins at most the run length) |
 | P23 | kh.stencil(offsets, roots) | offsets, a range | index tiles | host | D4 | one tile per root, holding root + each offset |
-| P24 | kh.mark_local_segmented(result) | result tiles of a segmented work set | | host | W12, W3 | holds the result in each segment's local memory; pulled only by items in the same segment |
+| P24 | kh.mark_segmented_local(result) | result tiles of a segmented work set | | host | W12, W3 | holds the result in local memory: the whole result in every segment if produced replicated, each segment's share if distributed |
+| P25 | unit.run_distributed(inputs..., fn) | as P07 | the unit's result | host call, fn device | W12 | on a segmented work set: each segment runs its share of the run; collectives join across segments |
+| P26 | unit.run_replicated(inputs..., fn) | as P07 | the unit's result | host call, fn device | W12 | on a segmented work set: every segment runs the whole run, item k taking positions k, k + items, ...; collectives stay in the group |
 
 Changelog:
 - v1 2026-11-23: P01-P20.
 - v2 2026-11-23 (D7): X1 renames; P15 kh.reuse_work removed (X2); P05 native shape and rank-3 form (X3, X4); P06 result shape (X4); P07 shorter runs (Q5).
 - v3 2026-11-23 (D8 and the pass): P15 kh.slice_work added (W1, D8); P21 kh.split_runs added (F11); P22, P23 defined at first use; P04 requires equal ranks (F9); P20 clarified (bound counts per iteration, meaning unchanged); P02 divisibility (Q6). No meaning of a primitive used by an earlier record was changed except by Jack's corrections X1-X4.
-- v4 2026-11-23 (D10): kh.split_runs withdrawn (P21 is now sg::segment_items); P24 kh.mark_local_segmented added; P05, P15 take segmented runs; P14 kh.mark_local is rejected on segmented work tiles.
+- v4 2026-11-23 (D10): kh.split_runs withdrawn (P21 is now sg::segment_items); P24 kh.mark_segmented_local added; P05, P15 take segmented runs; P14 kh.mark_local is rejected on segmented work tiles.
+- v5 2026-11-23 (D11): segmented work sets are their own type; P25 unit.run_distributed and P26 unit.run_replicated added; unit.run (P07) and kh.mark_local (P14) do not exist on them; P24 renamed kh.mark_segmented_local and holds results as their run produced them.
 
 ## 4. Mechanisms
 
@@ -118,6 +121,7 @@ Per kernel, the graph and its order: K1, K2: each slice task depends on level ta
 | F20 | K10 | n known only at run time may not divide the tile | approach right | builder error (default); Q6 |
 | F21 | K5, K7 | D8's run-time check of data-chosen pulls within a set | superseded by D9 | the tile graph rejects such kernels when the builder runs; nothing is left to check on the device |
 | F22 | K6, K14 | splitting runs after construction, and retiling work, do not fit fixed work tiles (Jack) | wrong approach | segmented runs at construction (P21 sg::segment_items, P24) |
+| F23 | K6 | a segmented stage read at other segments' positions needs the whole stage in each segment | approach right | unit.run_replicated (P26); K6 does not need it (distributed suffices) |
 
 ## 6. Review of decisions
 
@@ -156,5 +160,6 @@ Each option was traced on a dependent kernel: Q5b K3 with a 16-group totals set 
 | C3 | 2026-11-23 | follow-up in conversation | | 1 (the ordering rule) | accepted with the data-chosen contract (D8) |
 | C4 | 2026-11-23 | final page | see summary.md | 5 (Q5-Q9) | correction: segmented runs at construction (D10); delta page |
 | C5 | 2026-11-23 | in conversation | | 0 | the tile-graph rule (D9), replacing D8's run-time contract |
-| C6 | 2026-11-23 | delta page | see delta.md | 0 new (4 remaining) | pending |
+| C6 | 2026-11-23 | delta page | see delta.md | 0 new (4 remaining) | correction: segmented work sets as their own type, run_distributed / run_replicated (D11) |
+| C7 | 2026-11-23 | delta page, round 2 | see delta.md | 0 new (4 remaining) | pending |
 Total questions put: 11 (Q7 withdrawn).

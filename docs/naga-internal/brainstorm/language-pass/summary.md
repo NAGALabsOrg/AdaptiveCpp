@@ -1,4 +1,4 @@
-# The revised kernel language: summary for agreement (v2)
+# The revised kernel language: summary for agreement (v3)
 
 This page is all you need to read; delta.md lists what changed since v1. The full record (every kernel with its trace, the mechanisms, the misfit log, the review) is in record.md and kernels.md beside it.
 
@@ -21,7 +21,9 @@ A kernel tiles its data, declares work tiles (each one or more native work-group
 | kh.slice_work(work, offset, extent, stride, tile_shape, run) | reuse a subset of a work set's groups, possibly with a new shape |
 | kh.map_work(work, body(unit)) | body per unit on the host; one result tile per work tile |
 | kh.mark_local(result) | hold a result in local memory for other units of its work tile |
-| kh.mark_local_segmented(result) | the same on a segmented work tile, held per segment |
+| unit.run_distributed(inputs..., fn) | on a segmented work set: each segment runs its share; collectives join across segments (global) |
+| unit.run_replicated(inputs..., fn) | on a segmented work set: every segment runs the whole run; collectives stay in the group |
+| kh.mark_segmented_local(result) | a segmented result in local memory: the whole result in every segment if replicated, each segment's share if distributed |
 | kh.repeat(n, start, fn) | one structure applied n times; n a bound value |
 | kh.evaluate(elements) | assign to a result (inplace results combine) |
 | unit.tile() / unit.id() | the unit's work tile / its position in the tile |
@@ -34,7 +36,7 @@ Rules:
 - A result pulled by the work tile that made it stays a value, in local memory (if marked), or is recomputed; pulled by any other work tile it goes through global memory.
 - One launch has one native group size, the largest; smaller work tiles leave work-items unused.
 - Pulls form a dependency graph between tiles; a tile chosen from kernel data depends on every tile of its source set. The toolchain orders the native groups so each tile waits only on groups ahead of it; if no order exists, the builder rejects the kernel naming the cycle, and you break it with another work set. So data-chosen pulls only go from one work set to another.
-- Over the device's group cap, at construction: build different work tiles, or segment the run. Segmenting is a contract: collectives over the run are joined across segments with a global dependency, and local memory is segmented (kh.mark_local_segmented). The data tiling never changes.
+- Over the device's group cap, at construction: build different work tiles, or segment the run. A segmented work set is its own type: its units run_distributed (each segment its share; collectives joined across segments with a global dependency) or run_replicated (every segment the whole run; collectives stay in the group), and its results are marked local only with kh.mark_segmented_local. run_replicated is rejected if its input is a distributed result of its own set. The data tiling never changes.
 
 ## Four kernels
 
@@ -98,9 +100,9 @@ auto a_stage = kh.map_work(a_work, [=](auto unit) {
   auto a_band = a_bands[{t[0], 0}];
   auto a_row  = sg::slice(a_band, {u[0], 0}, {1, 128});
   auto a_run  = sg::flatten(a_row);
-  return unit.run(a_run, pass_items);
+  return unit.run_distributed(a_run, pass_items);
 });                                                               // this tile's 16 rows of A
-kh.mark_local_segmented(a_stage);
+kh.mark_segmented_local(a_stage);
 auto b_work  = kh.slice_work(work, {0, 0}, {8, 8}, {1, 1}, {16}, run);
 auto b_stage = kh.map_work(b_work, [=](auto unit) {
   auto t      = unit.tile();
@@ -108,9 +110,9 @@ auto b_stage = kh.map_work(b_work, [=](auto unit) {
   auto b_band = b_bands[{0, t[1]}];
   auto b_col  = sg::slice(b_band, {0, u[0]}, {128, 1});
   auto b_run  = sg::flatten(b_col);
-  return unit.run(b_run, pass_items);
+  return unit.run_distributed(b_run, pass_items);
 });                                                               // this tile's 16 columns of B
-kh.mark_local_segmented(b_stage);
+kh.mark_segmented_local(b_stage);
 auto C_tiles = kh.map_work(work, [=](auto unit) {
   auto t     = unit.tile();
   auto u     = unit.id();
@@ -120,7 +122,7 @@ auto C_tiles = kh.map_work(work, [=](auto unit) {
   auto b_row = sg::slice(my_b, {u[1], 0}, {1, 128});
   auto a_run = sg::flatten(a_row);
   auto b_run = sg::flatten(b_row);
-  return unit.run(a_run, b_run, dot_items);
+  return unit.run_distributed(a_run, b_run, dot_items);
 });                                                               // 8 x 8 result tiles of {16, 16}
 auto C_elems = kh.join(C_tiles);
 C_out = kh.evaluate(C_elems);
@@ -145,7 +147,7 @@ auto sums = kh.map_work(work, [=](auto unit) {
   auto t   = unit.tile();
   auto row = rows[{t[0], 0}];
   auto r   = sg::flatten(row);
-  return unit.run(r, sum_items);
+  return unit.run_distributed(r, sum_items);
 });                                                               // 64 result tiles of {1}
 auto sums_elems = kh.join(sums);
 y_out = kh.evaluate(sums_elems);
@@ -163,9 +165,9 @@ The same code as at cap 1024 except the run argument; the reduce is joined acros
 
 - Work units hold runs of items (names swapped); a work tile is a fixed set of native groups chosen at construction.
 - Groups are reused by slicing a work set (kh.slice_work), with any shape that fits.
-- Runs are an extra dimension of a result tile; a run may be segmented across native groups (sg::segment_items), with collectives joined across segments and segmented local memory.
+- Runs are an extra dimension of a result tile; a run may be segmented across native groups (sg::segment_items), giving a segmented work set whose units run_distributed or run_replicated.
 - The scan is 16 groups of 64; only the gathered totals cross tiles.
 - Pulls form a tile dependency graph that the toolchain orders; a kernel with no valid order is rejected when the builder runs; data-chosen pulls only cross work sets.
-- New: kh.stencil, sg::tile_bin as a run collective, sg::segment_items, kh.mark_local_segmented; unit.id is used by the stencils, the matrix product and interpolation.
+- New: kh.stencil, sg::tile_bin as a run collective, sg::segment_items, kh.mark_segmented_local; unit.id is used by the stencils, the matrix product and interpolation.
 - Element-wise chains are runs on a work set; no plain kh.map.
 - All 14 kernels are written and traced (kernels.md).

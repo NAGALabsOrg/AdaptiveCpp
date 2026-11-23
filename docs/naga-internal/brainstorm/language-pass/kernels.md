@@ -248,9 +248,9 @@ auto a_stage = kh.map_work(a_work, [=](auto unit) {
   auto a_band = a_bands[{t[0], 0}];
   auto a_row  = sg::slice(a_band, {u[0], 0}, {1, 128});
   auto a_run  = sg::flatten(a_row);
-  return unit.run(a_run, pass_items);
+  return unit.run_distributed(a_run, pass_items);
 });                                                               // 8 x 8 result tiles of {16, 128}
-kh.mark_local_segmented(a_stage);
+kh.mark_segmented_local(a_stage);
 auto b_work  = kh.slice_work(work, {0, 0}, {8, 8}, {1, 1}, {16}, run);
 auto b_stage = kh.map_work(b_work, [=](auto unit) {
   auto t      = unit.tile();
@@ -258,9 +258,9 @@ auto b_stage = kh.map_work(b_work, [=](auto unit) {
   auto b_band = b_bands[{0, t[1]}];
   auto b_col  = sg::slice(b_band, {0, u[0]}, {128, 1});
   auto b_run  = sg::flatten(b_col);
-  return unit.run(b_run, pass_items);
+  return unit.run_distributed(b_run, pass_items);
 });                                                               // 8 x 8 result tiles of {16, 128}
-kh.mark_local_segmented(b_stage);
+kh.mark_segmented_local(b_stage);
 auto C_tiles = kh.map_work(work, [=](auto unit) {
   auto t     = unit.tile();
   auto u     = unit.id();
@@ -270,7 +270,7 @@ auto C_tiles = kh.map_work(work, [=](auto unit) {
   auto b_row = sg::slice(my_b, {u[1], 0}, {1, 128});
   auto a_run = sg::flatten(a_row);
   auto b_run = sg::flatten(b_row);
-  return unit.run(a_run, b_run, dot_items);
+  return unit.run_distributed(a_run, b_run, dot_items);
 });                                                               // 8 x 8 result tiles of {16, 16}
 auto C_elems = kh.join(C_tiles);
 C_out = kh.evaluate(C_elems);
@@ -278,6 +278,7 @@ C_out = kh.evaluate(C_elems);
 
 Work-groups: 2048 groups of {16, 16, 4} = 1024; the stages use 64 work-items of each segment. Item p of a product run and item p of a stage run fall in the same segment (p / 4), so the segmented stages are pulled within their segment (W12). The reduce in dot_items is joined across 32 segments: the last segment waits on the others' partials (global, W12).
 Placement: A, B global inputs; a_stage, b_stage segmented local (W12, P24); per-segment partials global; C result memory.
+Run mode: the stages run distributed (item p of the product reads stage position p, in its own segment); run_replicated would give every segment all 128 positions at 32 x the stage work.
 Trace: C[3][5]: work tile (0, 0), unit (3, 5); a_stage row 3 is A row 3 (all 3s), b_stage row 5 is B column 5 (all 5s); 32 segment partials of 4 x 15 = 60 each, joined 1920. C[127][127] = 2064512.
 
 ## K7 Histogram, 4096 values, 16 bins
@@ -508,7 +509,7 @@ auto sums = kh.map_work(work, [=](auto unit) {
   auto t   = unit.tile();
   auto row = rows[{t[0], 0}];
   auto r   = sg::flatten(row);
-  return unit.run(r, sum_items);
+  return unit.run_distributed(r, sum_items);
 });                                                               // 64 result tiles of {1}
 auto sums_elems = kh.join(sums);
 y_out = kh.evaluate(sums_elems);
