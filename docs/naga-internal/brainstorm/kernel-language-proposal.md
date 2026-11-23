@@ -161,7 +161,7 @@ out = kh.evaluate(y);
 ```
 
 ### D5 Data-chosen destinations inside a tile (Jack, 2026-11-23)
-- `sg::tile_bin(bin_shape, key)` returns a tile of counts per bin. `sg::tile_bin(bin_shape, key, value_fn, initial, op)` returns a tile of combined values per bin (weighted histograms, deposition, segmented sums).
+- `sg::tile_bin(t, bin_shape, key)` returns a tile of counts per bin. `sg::tile_bin(t, bin_shape, key, value_fn, initial, op)` returns a tile of combined values per bin (weighted histograms, deposition, segmented sums).
 - `bin_shape` may be multi-dimensional; `key` returns an index of that rank.
 - `sg::categorize(cond..., v)` returns the index of the first true condition. Several true conditions is defined (the first wins) but is likely a logic error the toolchain cannot detect. A value with no true condition, or a key outside the bins, is dropped.
 - `initial` is applied once per bin per tile; where partial results are combined across tiles it should be the operation's identity (the user's contract).
@@ -171,7 +171,7 @@ Histogram:
 ```cpp
 auto v       = kh.source(v_in);                                                   // 4096 elements
 auto partial = kh.map(kh.tile(256, v), [](auto t) {
-                 return sg::tile_bin(16, [](int x) { return x % 16; }); });        // 16 tiles of 16 counts
+                 return sg::tile_bin(t, 16, [](int x) { return x % 16; }); });        // 16 tiles of 16 counts
 auto by_bin_map = kh.define_tiles(16, 16, [](auto b, auto p) { return p * 16 + b; });
 auto by_bin  = kh.index_map(by_bin_map, sg::fill{0}, kh.join(partial));            // 16 tiles of 16
 auto hist    = kh.join(kh.map(by_bin, [](auto t) { return sg::reduce(t, sycl::plus<>{}); }));  // 16 elements
