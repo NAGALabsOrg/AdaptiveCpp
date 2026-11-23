@@ -35,7 +35,7 @@ How to read the records:
 | C16 | Kernel cache: build code objects outside the cache lock | performance | no | no | now |
 | C17 | JIT tool invocations: exit-code messages and Windows error dialogs | bug fix | no | no | now |
 | C18 | Level Zero: include `<cstdint>` instead of a glibc-internal header | bug fix | no | no | now |
-| C19 | Link dependencies: Threads and the dynamic loader library | bug fix | no | no | now |
+| C19 | Link dependencies: Threads as a public requirement | bug fix | no | no | now |
 | C20 | pixi workspace and packages | pixi workspace | yes | yes | after conversation |
 
 C10 (small_vector under libc++) became keep-in-fork KF5 at Review 1; its id is retired. Counts: 19 candidates (9 flagged for a conversation, 10 not), plus the keep-in-fork decisions in keep-in-fork.md.
@@ -46,7 +46,7 @@ C10 (small_vector under libc++) became keep-in-fork KF5 at Review 1; its id is r
 - intent: Replace baked-in build-machine paths with a layered options, discovery and installed-configuration model (GNUInstallDirs install layout, `$ORIGIN` rpaths, an installed toolchain, application and deploy configuration read by the `acpp` driver and the runtime, run-time resolution of the LLVM tools and of the host JIT's vector math library), so that an installed AdaptiveCpp can be relocated and its vendor libraries bundled or deployed.
 - kind: build-system rework
 - secondary: other: documentation (doc/ edits for the model), other: refactor (removal of the legacy per-vendor finds and flat option emitter)
-- size: files 173, lines +6591 / -1205
+- size: files 173, lines +6596 / -1205
 - large: yes (kept at Review 1, U12). Proposed split, to be decided in the conversations: (a) options, discovery and configuration merge (`cmake/options/**`, `cmake/discovery/**`, `cmake/discovery.cmake`, `cmake/acpp-config-merge.cmake`, `config/**`, root `CMakeLists.txt` wiring); (b) install layout, vendor install rules and rpaths (`cmake/install/**`, `cmake/acpp-vendor-*.cmake`, `cmake/acpp-installed-configs.cmake`, install/rpath hunks of the `src/**/CMakeLists.txt` files and `src/tools/**`); (c) driver configuration and deploy (`bin/acpp`, `doc/` edits); (d) run-time settings and tool resolution (`include/hipSYCL/common/settings.hpp`, `src/common/**`, `src/runtime/backend_loader.cpp`, `Utils.cpp` and the `llvm-to-*` tool-path hunks, `LLVMToHost` vector math). Platform axes (Windows, macOS, Android) and vendor units (HIP SDK, NVHPC, Vulkan, clspv) are spread through (a)-(d); whether the parts stand alone has not been checked.
 - merged cycle: the host JIT vector-math change (default `libmvec`, loader lookup, `jit_host_*` run-time settings; working theme `vector-math`) and this candidate depend on each other, so they are one candidate. Evidence: `M:CMakeLists.txt:542` sets `DEFAULT_VEC_MATH_LIB`, consumed at `M:cmake/options/linux/common/core.cmake:129` (`set(ACPP_VECTOR_MATH_LIB "${DEFAULT_VEC_MATH_LIB}")`); the JIT consumes the installed key written from `M:config/common/core.json:90` (`"@ACPP_VECTOR_MATH_LIB@"`) via `M:src/compiler/llvm-to-backend/host/LLVMToHost.cpp:320` (`try_retrieve_settings_variable`).
 - requires: none
@@ -57,10 +57,10 @@ C10 (small_vector under libc++) became keep-in-fork KF5 at Review 1; its id is r
 - flag inputs: adds=option,default; contested=no; overlap=#2283,#2268,#2160,#2131,#1670 (install prefix and rpath work; judged by title, bodies not read)
 - conversation: yes (criteria a,b,c,e)
 - question: Do the maintainers want installs to be relocatable through an options, discovery and installed-configuration model that replaces build-machine paths (GNUInstallDirs layout, `$ORIGIN` rpaths, an installed toolchain and application config read by `acpp` and the runtime, run-time libmvec lookup, new `ACPP_<VENDOR>_ROOT` options and a changed vector-math default)? How should it be split, and how does it relate to #2283, #2268, #2160, #2131 and #1670?
-- venue: new issue (CONTRIBUTING.md line 3: open an issue when in doubt about design)
+- venue: new issue (CONTRIBUTING.md line 3: open an issue when in doubt about design), opened together with C20's reply in discussion #1981 as conversation 1
 - offer: the whole candidate on U, in the parts agreed in the issue
 - horizon: after conversation
-- next step: open conversation | owner: Jack | done: the issue is open with the recorded question and the maintainers' answer is recorded in decisions.md
+- next step: open conversation | owner: Jack | done: the issue is open together with the reply in discussion #1981 (C20), with the recorded question, and the maintainers' answer is recorded in decisions.md
 
 ```assignment C01
 paths
@@ -91,7 +91,7 @@ paths
 hunks
   doc/install-llvm.md @94,1
   src/compiler/CMakeLists.txt @19,3 @27,1 @229,3
-  src/compiler/llvm-to-backend/CMakeLists.txt @200,21:6-21 @268,7:1-4,6-7^2-3
+  src/compiler/llvm-to-backend/CMakeLists.txt @200,21 @268,7:1-4,6-7^2-3
   src/compiler/llvm-to-backend/Utils.cpp @23,12:9-12 @53,58:25-30,32-58^*
   src/compiler/llvm-to-backend/spirv/LLVMToSpirv.cpp @20,1 @354,9 @364,8
   src/runtime/CMakeLists.txt @117,3 @136,3 @157,9 @187,4 @209,9 @229,3 @250,7 @272,3 @277,3 @296,8 @358,7 @521,0 @549,8 @607,3
@@ -619,15 +619,15 @@ paths
   src/runtime/ze/**
 ```
 
-## C19 Link dependencies: Threads and the dynamic loader library
+## C19 Link dependencies: Threads as a public requirement
 
-- title: Declare Threads as a public usage requirement of `acpp-rt` and in the package configs, and link the dynamic loader library into `llvm-to-backend`
-- intent: Link `Threads::Threads` publicly from `acpp-rt` (and name it explicitly for `rt-backend-omp`), call `find_dependency(Threads)` in the installed `adaptivecpp`, `hipsycl` and `opensycl` package configs so consumers get the imported target, and link `${CMAKE_DL_LIBS}` into `llvm-to-backend` for glibc before 2.34.
+- title: Declare Threads as a public usage requirement of `acpp-rt` and in the package configs
+- intent: Link `Threads::Threads` publicly from `acpp-rt` (and name it explicitly for `rt-backend-omp`) and call `find_dependency(Threads)` in the installed `adaptivecpp`, `hipsycl` and `opensycl` package configs so consumers get the imported target.
 - kind: bug fix (changed from build-system rework at Review 1, U11)
 - secondary: none
-- size: files 5, lines +25 / -3
+- size: files 4, lines +20 / -3
 - large: no
-- requires: none. Checked and ruled out: C02's `async_host_executor.cpp` uses `std::thread` (`M:src/runtime/async_host_executor.cpp:12`, `:68`) but links `Threads::Threads` already at U (`U:src/runtime/CMakeLists.txt:64`, PRIVATE), so C02 does not need this change. The `CMAKE_DL_LIBS` line moved here from C01 at Review 1 (U02); its comment names `getLibMvecDir()`, which is C01's code (`M:src/compiler/llvm-to-backend/CMakeLists.txt:203`), so on U alone the line links a library nothing uses yet.
+- requires: none. Checked and ruled out: C02's `async_host_executor.cpp` uses `std::thread` (`M:src/runtime/async_host_executor.cpp:12`, `:68`) but links `Threads::Threads` already at U (`U:src/runtime/CMakeLists.txt:64`, PRIVATE), so C02 does not need this change. The `CMAKE_DL_LIBS` line (`llvm-to-backend/CMakeLists.txt@200,21`) was moved here from C01 at Review 1 (U02) and moved back to C01 at Review 2, because its comment names `getLibMvecDir()`, which is C01's code (`M:src/compiler/llvm-to-backend/CMakeLists.txt:203`).
 - pending: none
 - seams: none
 - applicability: clean
@@ -642,7 +642,6 @@ hunks
   cmake/adaptivecpp-config.cmake.in @9,3
   cmake/hipsycl-config.cmake.in @14,3
   cmake/opensycl-config.cmake.in @11,3
-  src/compiler/llvm-to-backend/CMakeLists.txt @200,21:1-5
   src/runtime/CMakeLists.txt @65,7 @532,4
 ```
 
@@ -656,16 +655,16 @@ hunks
 - large: yes (kept at Review 1, U12). Proposed split, to be decided in the conversation: (a) workspace manifest, lock and tasks (`pixi.toml`, `pixi.lock`, `naga/tasks/**`, `.pixi/config.toml`, `.gitignore` hunk); (b) package slices and vendor extras (`packages/slices/**`, `packages/extras/**`, `packages/checks/**`); (c) core build, sources and compiler activation (`packages/core/**`, `packages/activations/**`).
 - requires: C01, C03, C04. Evidence is in the requires block; C03 carries the pending edge on #1986, so this candidate waits on it through C03.
 - pending: maintainer decision: whether upstream wants a pixi manifest. Discussion #1981: Jack offered to submit it on 2026-09-04 and illuhad replied on 2026-09-09 asking what infrastructure the packaging needs and whether it could be upstreamed; no answer on the `pixi build` offer was found (baseline.md, maintainer statements).
-- seams: KF4 (the pinned translator commit lives in the fork's translator repository); see the seams block. The patches and pins (KF3 before Review 1) are part of this candidate now, so that seam is resolved. Renaming the `naga-acpp-*` packages and the channel `https://prefix.dev/jackm97/naga-labs` is preparation for this candidate's PR (Review 1, U07), not a separate disposition.
+- seams: KF4 (the pinned translator commit lives in the fork's translator repository); see the seams block. Review 2 addresses it by asking in this candidate's conversation whether upstream wants an LLVM 23 branch in AdaptiveCpp/SPIRV-LLVM-Translator, which the fork could supply. The patches and pins (KF3 before Review 1) are part of this candidate now, so that seam is resolved. Renaming the `naga-acpp-*` packages and the channel `https://prefix.dev/jackm97/naga-labs` is preparation for this candidate's PR (Review 1, U07), not a separate disposition.
 - applicability (with C01, C03, C04): conflicting files: `CMakeLists.txt`, `include/hipSYCL/common/settings.hpp`, `src/compiler/llvm-to-backend/CMakeLists.txt` (all from C01)
 - open upstream PRs by path: none
 - flag inputs: adds=none; contested=yes; overlap=none
 - conversation: yes (criteria a,c,d)
-- question: Would AdaptiveCpp take a pixi workspace that builds the toolchain as conda packages (core build with source pins and patches, slices, runtime vendor extras, compiler activation, consumer check, lock file in the tree), and in what shape? For LLVM 23 builds against a development snapshot: is the development-version rule at `CMakeLists.txt:481` and `:486` something you want to keep or relax (the question C03 rides on)?
-- venue: existing discussion #1981 (Jack's offer of 2026-09-04, illuhad's question of 2026-09-09)
+- question: Would AdaptiveCpp take a pixi workspace that builds the toolchain as conda packages (core build with source pins and patches, slices, runtime vendor extras, compiler activation, consumer check, lock file in the tree), and in what shape? This answers illuhad's question of 2026-09-09 about what infrastructure the packaging needs: it needs the build-system work of the linked C01 issue first. For LLVM 23 builds against a development snapshot: is the development-version rule at `CMakeLists.txt:481` and `:486` something you want to keep or relax (the question C03 rides on), and do you want an LLVM 23 branch in AdaptiveCpp/SPIRV-LLVM-Translator, which we could supply?
+- venue: existing discussion #1981 (Jack's offer of 2026-09-04, illuhad's question of 2026-09-09); the reply is posted together with C01's issue as conversation 1 and links it
 - offer: the pixi workspace and packages, with the `naga-acpp-*` names and the channel replaced before the PR
 - horizon: after conversation
-- next step: open conversation | owner: Jack | done: the comment is posted in discussion #1981 with the recorded questions and the maintainers' answers are recorded in decisions.md
+- next step: open conversation | owner: Jack | done: the reply is posted in discussion #1981 together with C01's issue, linking it, with the recorded questions, and the maintainers' answers are recorded in decisions.md
 
 ```assignment C20
 paths
@@ -715,10 +714,10 @@ Seams, `candidate keep-in-fork resolution evidence-token | note`; the resolution
 ```seams
 C03 KF6 pending M:src/compiler/AdaptiveCppLlvmPasses.cpp:43 PassPlugin | the LLVM 23 build needs the LLVM 22 plugin-header move that #1986 also makes (Review 1, U08)
 C07 KF7 pending M:tests/sycl/group_functions/group_functions_scan.cpp:1004 known_identity_v | the tests expect the identities that #2282 also makes (Review 1, C07 amendment)
-C20 KF4 rework M:packages/core/build-lib.nu:57 LLVMSPIRV_COMMIT | the pinned commit exists only in the fork's translator repository that the URL line in KF4 selects; rework: carry the repository URL as a configure input of the package build, so the upstream URL stays in C01
+C20 KF4 rework M:packages/core/build-lib.nu:57 LLVMSPIRV_COMMIT | the pinned commit exists only in the fork's translator repository that the URL line in KF4 selects; rework: carry the repository URL as a configure input of the package build, so the upstream URL stays in C01; Review 2: the C20 conversation also asks whether upstream wants an LLVM 23 branch in AdaptiveCpp/SPIRV-LLVM-Translator, which the fork could supply
 ```
 
-Every other candidate has no requires, no pending edge and no seam. The graph is acyclic; topological order (prerequisites first): C01, C03, C04, then C20, with every other candidate free. Merged cycle: the host JIT vector-math change into C01 (see C01). Review 1 changes to the graph: C17 no longer requires C01 (U02); C01's seam on the translator URL is resolved (U03); C20's seam on KF3 is resolved by moving KF3 into C20 (U06); C03 and C07 gained pending edges and seams on KF6 and KF7.
+Every other candidate has no requires, no pending edge and no seam. The graph is acyclic; topological order (prerequisites first): C01, C03, C04, then C20, with every other candidate free. Merged cycle: the host JIT vector-math change into C01 (see C01). Review 1 changes to the graph: C17 no longer requires C01 (U02); C01's seam on the translator URL is resolved (U03); C20's seam on KF3 is resolved by moving KF3 into C20 (U06); C03 and C07 gained pending edges and seams on KF6 and KF7. Review 2: the `CMAKE_DL_LIBS` line moved from C19 back to C01 (no edge changes).
 
 ## Applicability (D2) method
 

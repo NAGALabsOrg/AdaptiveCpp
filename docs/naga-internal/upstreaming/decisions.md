@@ -63,4 +63,41 @@ Unresolved list after Review 1: none.
 
 ## Review 2
 
-none (not yet held)
+Held 2026-11-23. Jack approved the roadmap draft (commit a0161550) with the Research Lead's three changes below. Dissent noted by the Research Lead: none. Also decided: no candidate gets "after next release"; criterion (e) is read as overlap in intent or content, not bare path overlap.
+
+Changes:
+1. C20's reply in discussion #1981 and C01's new issue are opened together, as conversation 1; the #1981 reply links the C01 issue and says the packaging needs that build-system work first (answering illuhad's 2026-09-09 question about what infrastructure the packaging needs).
+2. The LLVM 23 question (C20/C03) also asks whether upstream wants an LLVM 23 branch in AdaptiveCpp/SPIRV-LLVM-Translator, which we could supply. This is how C20's seam on KF4 is addressed.
+3. The `CMAKE_DL_LIBS` line (`src/compiler/llvm-to-backend/CMakeLists.txt@200,21`) moves from C19 back to C01, since it serves C01's code. This reverses that part of U02; C19's title and intent drop the loader library.
+
+Entry by id (flags, questions, order, horizons and next steps approved as drafted unless it says amended):
+
+| id | entry |
+|---|---|
+| C01 | amended: conversation 1 with C20's reply; owns the `CMAKE_DL_LIBS` line again |
+| C02 | approved |
+| C03 | approved; its LLVM 23 question rides on conversation 1, which now also asks about the translator branch |
+| C04 | approved |
+| C05 | approved |
+| C06 | approved |
+| C07 | approved |
+| C08 | approved |
+| C09 | approved |
+| C11 | approved |
+| C12 | approved |
+| C13 | approved |
+| C14 | approved |
+| C15 | approved |
+| C16 | approved |
+| C17 | approved |
+| C18 | approved |
+| C19 | amended: the `CMAKE_DL_LIBS` line is out of it; title and intent reduced to Threads |
+| C20 | amended: conversation 1 with C01's issue; question adds the packaging dependency on C01 and the translator branch |
+| KF1 | approved |
+| KF2 | approved |
+| KF4 | approved; the C20 seam is addressed by the translator-branch question |
+| KF5 | approved |
+| KF6 | approved |
+| KF7 | approved |
+
+Unresolved list after Review 2: none.

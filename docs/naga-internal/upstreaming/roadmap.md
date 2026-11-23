@@ -2,7 +2,7 @@
 
 Pins: U `27ed6400e890cf0ecd2aa0b055d75cc08ac68dfc` (upstream/develop, 2026-11-19T21:12:24Z, unchanged when fetched again on 2026-11-23), N `0e2bac974c40554f62286cbffe1f06c87cc9caa9`, B `9ec394efa584ced004d644af2194d2133e111d26`.
 
-Status: draft for Review 2. The order, horizons, conversations and next steps below are the Research Lead's proposals; nothing here is decided until decisions.md holds Jack's Review 2 entry. Candidates and keep-in-fork decisions were approved at Review 1 (2026-11-23); their full records are in candidates.md and keep-in-fork.md. This file is meant to be read alone.
+Status: Review 2 applied (decisions.md, 2026-11-23): Jack approved the order, horizons, conversations and next steps with the changes recorded there. Candidates and keep-in-fork decisions were approved at Review 1 (2026-11-23); their full records are in candidates.md and keep-in-fork.md. This file is meant to be read alone.
 
 In short: 19 candidates, 6 keep-in-fork decisions. 9 candidates need a maintainer conversation first (C01, C02, C03, C04, C05, C06, C07, C15, C20); 10 can go straight to a PR (C08, C09, C11, C12, C13, C14, C16, C17, C18, C19). Candidates are PR-ready against U (no build was run; readiness means the textual trial merge, see candidates.md); the two with conflicts to resolve first are C09 (`omp_queue.hpp`) and C17 (`Utils.hpp`).
 
@@ -39,17 +39,21 @@ Candidates in an order where none precedes one it requires (C20 requires C01, C0
 19 C09 now
 ```
 
-Titles: C01 Relocatable toolchain configuration; C02 async_host and deferred issue of operations with foreign requirements; C03 LLVM 23 support; C04 Linked-into-LLVM build fixes; C05 Dynamic functions across translation units and object formats; C06 CBS: values carried across barriers and split loops; C07 SSCP group scans and sub-group ids in work-group reduce; C08 Keep alloca alignment and size in address-space and aggregate passes; C09 Include what you use for Xcode 26 libc++; C11 pcuda robustness and MSVC kernel names; C12 OpenCL: SPIR-V built for the device's OpenCL C version; C13 OpenCL: failed USM prefetch is an ignored hint; C14 stdpar: float and pointer atomics through integer builtins; C15 SSCP: propagate convergent before pre-inline simplification; C16 Kernel cache: build code objects outside the cache lock; C17 JIT tool invocations: exit-code messages and Windows error dialogs; C18 Level Zero: include `<cstdint>` instead of a glibc-internal header; C19 Link dependencies: Threads and the dynamic loader library; C20 pixi workspace and packages.
+Titles: C01 Relocatable toolchain configuration; C02 async_host and deferred issue of operations with foreign requirements; C03 LLVM 23 support; C04 Linked-into-LLVM build fixes; C05 Dynamic functions across translation units and object formats; C06 CBS: values carried across barriers and split loops; C07 SSCP group scans and sub-group ids in work-group reduce; C08 Keep alloca alignment and size in address-space and aggregate passes; C09 Include what you use for Xcode 26 libc++; C11 pcuda robustness and MSVC kernel names; C12 OpenCL: SPIR-V built for the device's OpenCL C version; C13 OpenCL: failed USM prefetch is an ignored hint; C14 stdpar: float and pointer atomics through integer builtins; C15 SSCP: propagate convergent before pre-inline simplification; C16 Kernel cache: build code objects outside the cache lock; C17 JIT tool invocations: exit-code messages and Windows error dialogs; C18 Level Zero: include `<cstdint>` instead of a glibc-internal header; C19 Link dependencies: Threads as a public requirement; C20 pixi workspace and packages.
 
 ## Conversations
 
-Opening order, with the reason: C20 first because it gates C03 (its LLVM 23 question rides on it) and the pixi decision; then the three comments on open PRs, which are time-sensitive (#2282 is approved, #2307 and #2305 are awaiting review); then the design issues; the draft PR last because it needs its branch prepared.
+Opening order, with the reason: conversation 1 is C20's reply in discussion #1981 and C01's new issue, opened together: the reply links the issue and says the packaging needs that build-system work first (it answers illuhad's 2026-09-09 question about what infrastructure the packaging needs), and C20's LLVM 23 question (which C03 rides on) gates C03. Then the three comments on open PRs, which are time-sensitive (#2282 is approved, #2307 and #2305 are awaiting review); then the other design issues; the draft PR last because it needs its branch prepared.
 
 ```conversations
 1 C20
-venue: existing discussion #1981 (Jack's offer of 2026-09-04, illuhad's question of 2026-09-09)
-question: Would AdaptiveCpp take a pixi workspace that builds the toolchain as conda packages (core build with source pins and patches, slices, runtime vendor extras, compiler activation, consumer check, lock file in the tree), and in what shape? For LLVM 23 builds against a development snapshot: is the development-version rule at `CMakeLists.txt:481` and `:486` something you want to keep or relax (the question C03 rides on)?
+venue: existing discussion #1981 (Jack's offer of 2026-09-04, illuhad's question of 2026-09-09); the reply is posted together with C01's issue as conversation 1 and links it
+question: Would AdaptiveCpp take a pixi workspace that builds the toolchain as conda packages (core build with source pins and patches, slices, runtime vendor extras, compiler activation, consumer check, lock file in the tree), and in what shape? This answers illuhad's question of 2026-09-09 about what infrastructure the packaging needs: it needs the build-system work of the linked C01 issue first. For LLVM 23 builds against a development snapshot: is the development-version rule at `CMakeLists.txt:481` and `:486` something you want to keep or relax (the question C03 rides on), and do you want an LLVM 23 branch in AdaptiveCpp/SPIRV-LLVM-Translator, which we could supply?
 offer: the pixi workspace and packages, with the `naga-acpp-*` names and the channel replaced before the PR
+1 C01
+venue: new issue (CONTRIBUTING.md line 3: open an issue when in doubt about design), opened together with C20's reply in discussion #1981 as conversation 1
+question: Do the maintainers want installs to be relocatable through an options, discovery and installed-configuration model that replaces build-machine paths (GNUInstallDirs layout, `$ORIGIN` rpaths, an installed toolchain and application config read by `acpp` and the runtime, run-time libmvec lookup, new `ACPP_<VENDOR>_ROOT` options and a changed vector-math default)? How should it be split, and how does it relate to #2283, #2268, #2160, #2131 and #1670?
+offer: the whole candidate on U, in the parts agreed in the issue
 2 C07
 venue: comment on PR #2282
 question: The scan rewrites and the sub-group id and count change in `wg_reduce` are independent of #2282's identities, but our fractional and negative min/max tests rely on them. Should they come as a separate PR after #2282, and do you want the tests added there?
@@ -62,19 +66,15 @@ offer: the call-site marking and the helper-barrier test
 venue: comment on PR #2305
 question: PR #2305 appears to fix the same bug in `fixSingleSubCfgValues` (the alloca found in `RemappedInstAllocaMap` being overwritten by `getLoopStateAllocaForLoad`). Our change also stops recomputing side-effecting and memory-reading values after a barrier and restores split-loop live values, with four lit tests (issue #2264). Should ours go on top of #2305 once it merges, or be folded into it?
 offer: the candidate's hunks and four lit tests, rebased on #2305
-5 C01
-venue: new issue (CONTRIBUTING.md line 3: open an issue when in doubt about design)
-question: Do the maintainers want installs to be relocatable through an options, discovery and installed-configuration model that replaces build-machine paths (GNUInstallDirs layout, `$ORIGIN` rpaths, an installed toolchain and application config read by `acpp` and the runtime, run-time libmvec lookup, new `ACPP_<VENDOR>_ROOT` options and a changed vector-math default)? How should it be split, and how does it relate to #2283, #2268, #2160, #2131 and #1670?
-offer: the whole candidate on U, in the parts agreed in the issue
-6 C02
+5 C02
 venue: new issue
 question: Is an `async_host` queue and handler extension, with deferred issue of operations whose requirements belong to other queues or host tasks (host-function deferral on CUDA and HIP, waits on in-order queues, a retarget context), wanted in AdaptiveCpp, and how should it be split?
 offer: the candidate with its documentation (doc/extensions.md, doc/runtime-spec.md) and tests, in the parts agreed in the issue
-7 C05
+6 C05
 venue: new issue
 question: Is extending the dynamic-function extension (definitions in other translation units, indexed call sequences, host stand-ins for ELF, Mach-O and COFF) wanted, and does the extension's interface change need design discussion first?
 offer: the candidate with its lit tests and doc/extensions.md text
-8 C04
+7 C04
 venue: draft PR as the venue itself
 question: Is building AdaptiveCpp linked into the LLVM tools (`LLVM_ADAPTIVECPP_LINK_INTO_TOOLS`, openmp as an LLVM runtime, a Windows LLVM DLL) a configuration upstream supports, so that these fixes belong upstream?
 offer: the candidate as a draft PR on U
@@ -86,10 +86,10 @@ offer: the LLVM 23 helpers and ports on top of U with #1986
 
 ## Next steps
 
-One per candidate: type, owner, done-condition. Types: open conversation, prepare PR, seam rework, wait. The seam on C20 (the translator repository, KF4) is handled as part of its PR preparation after its conversation (rework recorded in candidates.md); the pending edges on C03 (#1986) and C07 (#2282) are in the done-conditions.
+One per candidate: type, owner, done-condition. Types: open conversation, prepare PR, seam rework, wait. The seam on C20 (the translator repository, KF4) is handled as part of its PR preparation after its conversation (rework recorded in candidates.md); the conversation also asks whether upstream wants an LLVM 23 branch in AdaptiveCpp/SPIRV-LLVM-Translator, which we could supply; the pending edges on C03 (#1986) and C07 (#2282) are in the done-conditions.
 
 ```steps
-C01 | open conversation | Jack | the issue is open with the recorded question and the maintainers' answer is recorded in decisions.md
+C01 | open conversation | Jack | the issue is open together with the reply in discussion #1981 (C20), with the recorded question, and the maintainers' answer is recorded in decisions.md
 C02 | open conversation | Jack | the issue is open with the recorded question and the maintainers' answer is recorded in decisions.md
 C03 | wait | Research Lead | C20's conversation (opened first) has the maintainers' answer on LLVM 23 and PR #1986 has merged
 C04 | open conversation | Jack | the draft PR is open with the recorded question and the maintainers' answer is recorded in decisions.md
@@ -107,7 +107,7 @@ C16 | prepare PR | Research Lead | a branch on U carries exactly the hunks of th
 C17 | prepare PR | Research Lead | a branch on U carries exactly the hunks of this candidate and the conflict in `Utils.hpp` is resolved against bce257b0
 C18 | prepare PR | Research Lead | a branch on U carries exactly the hunks of this candidate and its textual trial merge is clean
 C19 | prepare PR | Research Lead | a branch on U carries exactly the hunks of this candidate and its textual trial merge is clean
-C20 | open conversation | Jack | the comment is posted in discussion #1981 with the recorded questions and the maintainers' answers are recorded in decisions.md
+C20 | open conversation | Jack | the reply is posted in discussion #1981 together with C01's issue, linking it, with the recorded questions, and the maintainers' answers are recorded in decisions.md
 ```
 
 ## Keep-in-fork list
@@ -123,6 +123,6 @@ KF6 | transitional | #1986 merges (Review 1, U08) | The CI matrix entry, plugin-
 KF7 | transitional | #2282 merges (Review 1, C07 amendment) | The min/max identity helpers match what open PR #2282 makes, and the `wg_reduce` broadcast hunk is only a comment on a fix that U already has from #2301, so the fork keeps both until #2282 lands.
 ```
 
-## What Review 2 decides
+## Review 2 decisions
 
-Conversation flags and questions, the order, the horizons and the next steps above. Points the draft leaves open for Jack: whether any candidate should be "after next release" given the release timing above; the reading of criterion (e) (candidates.md: open PRs of overlapping intent or content, not bare path overlap); C19's `CMAKE_DL_LIBS` line serving code that is in C01; and the seam C20 has on KF4.
+Jack approved the flags, questions, order, horizons and next steps on 2026-11-23, with three changes: C20's reply in discussion #1981 and C01's issue are opened together as conversation 1; the LLVM 23 question also asks whether upstream wants an LLVM 23 branch in AdaptiveCpp/SPIRV-LLVM-Translator (this addresses C20's seam on KF4); the `CMAKE_DL_LIBS` line moved from C19 back to C01. Also decided: no candidate gets "after next release", and criterion (e) is read as overlap in intent or content, not bare path overlap. Details are in decisions.md.
