@@ -14,6 +14,7 @@
 #include "hipSYCL/compiler/sscp/pcuda/FreeKernelCall.hpp"
 #include "hipSYCL/compiler/sscp/KernelOutliningPass.hpp"
 #include "hipSYCL/compiler/cbs/IRUtils.hpp"
+#include "hipSYCL/compiler/llvm-to-backend/NameHandling.hpp"
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/GlobalValue.h>
@@ -68,12 +69,16 @@ llvm::GlobalVariable* getHcfObjectIdGV(llvm::Module* M) {
 llvm::GlobalVariable* generateKernelName(llvm::Function* F) {
   std::string Name = F->getName().str();
   std::string GVName = "__acpp_free_kernel_name_" + Name;
+  std::string KernelName = Name;
+#ifdef _MSC_VER
+  replaceInvalidMSABICharsInSymbolName(KernelName);
+#endif
 
   if (auto *GV = F->getParent()->getGlobalVariable(GVName)) {
     return GV;
   } else {
     llvm::Constant *Initializer = llvm::ConstantDataArray::getRaw(
-        Name + '\0', Name.size() + 1, llvm::Type::getInt8Ty(F->getContext()));
+        KernelName + '\0', KernelName.size() + 1, llvm::Type::getInt8Ty(F->getContext()));
 
     llvm::Module* M = F->getParent();
     llvm::GlobalVariable *NewGV = new llvm::GlobalVariable{

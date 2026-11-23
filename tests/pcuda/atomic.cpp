@@ -93,13 +93,13 @@ void test_atomic_sub() {
   BOOST_CHECK(pcudaFree(data) == pcudaSuccess);
 }
 
-BOOST_AUTO_TEST_CASE_TEMPLATE(atomicAdd, T, add_test_types) {
+BOOST_AUTO_TEST_CASE_TEMPLATE(atomic_add, T, add_test_types) {
   if(skip_test_for_type<T>())
     return;
   test_atomic_add<T>();
 }
 
-BOOST_AUTO_TEST_CASE_TEMPLATE(atomicSub, T, sub_test_types) {
+BOOST_AUTO_TEST_CASE_TEMPLATE(atomic_sub, T, sub_test_types) {
   if(skip_test_for_type<T>())
     return;
   test_atomic_sub<T>();
@@ -139,7 +139,7 @@ void test_atomic_min() {
 }
 
 
-BOOST_AUTO_TEST_CASE_TEMPLATE(atomicMin, T, min_test_types) {
+BOOST_AUTO_TEST_CASE_TEMPLATE(atomic_min, T, min_test_types) {
   if(skip_test_for_type<T>())
     return;
   test_atomic_min<T>();
@@ -177,7 +177,7 @@ void test_atomic_max() {
 }
 
 
-BOOST_AUTO_TEST_CASE_TEMPLATE(atomicMax, T, max_test_types) {
+BOOST_AUTO_TEST_CASE_TEMPLATE(atomic_max, T, max_test_types) {
   if(skip_test_for_type<T>())
     return;
   test_atomic_max<T>();

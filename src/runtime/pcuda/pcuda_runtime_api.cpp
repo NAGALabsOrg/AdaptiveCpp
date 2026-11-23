@@ -68,6 +68,51 @@ const device_id* get_current_device_id(){
   return &(dev->rt_device_id);
 }
 
+// Resolves runtime -> backend -> allocator for `dev` one step at a time. Each
+// step is null-checked so that a failed lookup is reported with the step and
+// the backend id instead of dereferencing a null pointer. On failure returns
+// nullptr, registers a PCUDA error and sets `err`: pcudaErrorNoDevice when the
+// runtime or the backend is missing, pcudaErrorMemoryAllocation when the
+// backend has no allocator for the device.
+backend_allocator *get_allocator_checked(const device_id &dev,
+                                         const char *caller,
+                                         pcudaError_t &err) {
+  const std::string backend_str =
+      std::to_string(static_cast<int>(dev.get_backend()));
+
+  runtime *rt = pcuda_application::get().pcuda_rt().get_rt();
+  if(!rt) {
+    err = pcudaErrorNoDevice;
+    register_pcuda_error(__acpp_here(), err,
+                         std::string{caller} +
+                             ": runtime pointer is null (backend id " +
+                             backend_str + ")");
+    return nullptr;
+  }
+
+  backend *b = rt->backends().get(dev.get_backend());
+  if(!b) {
+    err = pcudaErrorNoDevice;
+    register_pcuda_error(__acpp_here(), err,
+                         std::string{caller} +
+                             ": backend lookup returned null (backend id " +
+                             backend_str + ")");
+    return nullptr;
+  }
+
+  backend_allocator *allocator = b->get_allocator(dev);
+  if(!allocator) {
+    err = pcudaErrorMemoryAllocation;
+    register_pcuda_error(__acpp_here(), err,
+                         std::string{caller} +
+                             ": backend returned a null allocator (backend id " +
+                             backend_str + ")");
+    return nullptr;
+  }
+
+  return allocator;
+}
+
 
 pcudaStream_t stream_or_default_stream(pcudaStream_t stream) {
   if(!stream) {
@@ -107,9 +152,11 @@ const hcf_kernel_info* extract_kernel_info(hcf_object_id id, std::string_view ke
   else {
     auto* info = hcf_cache::get().get_kernel_info(id, kernel_name);
 
-    __atomic_store_n(kernel_specific_storage,
-                     const_cast<void *>(static_cast<const void *>(info)),
-                     __ATOMIC_RELAXED);
+    // A failed lookup is not cached.
+    if(info)
+      __atomic_store_n(kernel_specific_storage,
+                       const_cast<void *>(static_cast<const void *>(info)),
+                       __ATOMIC_RELAXED);
     return info;
   }
 }
@@ -148,6 +195,13 @@ ACPP_PCUDA_API pcudaError_t __pcudaKernelCall(const char *kernel_name,
   std::string_view kernel_name_view = std::string_view{kernel_name};
   const rt::hcf_kernel_info *kinfo = extract_kernel_info(
       hcf_object, kernel_name_view, kernel_specific_storage);
+  if(!kinfo) {
+    register_pcuda_error(__acpp_here(), pcudaErrorInvalidDeviceFunction,
+                         std::string{"pcudaKernelCall: no kernel info for kernel '"} +
+                             std::string{kernel_name_view} + "' in HCF object " +
+                             std::to_string(hcf_object));
+    return pcudaErrorInvalidDeviceFunction;
+  }
   std::size_t num_args = kinfo->get_host_side_parameter_sizes().size();
   // empty config is fine; we don't expect user interaction
   rt::kernel_configuration config;
@@ -520,12 +574,10 @@ ACPP_PCUDA_API pcudaError_t pcudaAllocateDevice(void** ptr, size_t s) {
   if(!dev)
     return pcudaErrorNoDevice;
 
-  auto* allocator = pcuda_application::get()
-      .pcuda_rt()
-      .get_rt()
-      ->backends()
-      .get(dev->get_backend())
-      ->get_allocator(*dev);
+  pcudaError_t lookup_err = pcudaSuccess;
+  auto* allocator = get_allocator_checked(*dev, "pcudaAllocateDevice", lookup_err);
+  if(!allocator)
+    return lookup_err;
 
   void* mem = allocate_device(allocator, 0, s, {});
   if(!mem)
@@ -545,12 +597,10 @@ ACPP_PCUDA_API pcudaError_t pcudaAllocateHost(void** ptr, size_t s) {
   if(!dev)
     return pcudaErrorNoDevice;
 
-  auto* allocator = pcuda_application::get()
-      .pcuda_rt()
-      .get_rt()
-      ->backends()
-      .get(dev->get_backend())
-      ->get_allocator(*dev);
+  pcudaError_t lookup_err = pcudaSuccess;
+  auto* allocator = get_allocator_checked(*dev, "pcudaAllocateHost", lookup_err);
+  if(!allocator)
+    return lookup_err;
 
   void* mem = allocate_host(allocator, 0, s, {});
   if(!mem)
@@ -571,12 +621,10 @@ ACPP_PCUDA_API pcudaError_t pcudaAllocateShared(void **ptr, size_t s,
   if(!dev)
     return pcudaErrorNoDevice;
 
-  auto* allocator = pcuda_application::get()
-      .pcuda_rt()
-      .get_rt()
-      ->backends()
-      .get(dev->get_backend())
-      ->get_allocator(*dev);
+  pcudaError_t lookup_err = pcudaSuccess;
+  auto* allocator = get_allocator_checked(*dev, "pcudaAllocateShared", lookup_err);
+  if(!allocator)
+    return lookup_err;
 
   void* mem = allocate_shared(allocator, s, {});
   if(!mem)
@@ -596,12 +644,10 @@ ACPP_PCUDA_API pcudaError_t pcudaFree(void* ptr) {
   auto* dev = get_current_device_id();
   if(!dev)
     return pcudaErrorNoDevice;
-  auto* allocator = pcuda_application::get()
-      .pcuda_rt()
-      .get_rt()
-      ->backends()
-      .get(dev->get_backend())
-      ->get_allocator(*dev);
+  pcudaError_t lookup_err = pcudaSuccess;
+  auto* allocator = get_allocator_checked(*dev, "pcudaFree", lookup_err);
+  if(!allocator)
+    return lookup_err;
   deallocate(allocator, ptr);
 
   return pcudaSuccess;

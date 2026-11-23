@@ -38,10 +38,10 @@ device_topology::device_topology(runtime *rt) {
            ++global_dev_idx) {
         auto *d = b->get_hardware_manager()->get_device(global_dev_idx);
         if (d->get_platform_index() == platform) {
-          ++pcuda_dev_idx;
-
           device_topology::device dev;
+          // Assign first, then increment: PCUDA device ids are 0-based.
           dev.pcuda_device_id = pcuda_dev_idx;
+          ++pcuda_dev_idx;
           dev.rt_device_id =
               rt::device_id{b->get_backend_descriptor(), global_dev_idx};
           dev.dev = d;
