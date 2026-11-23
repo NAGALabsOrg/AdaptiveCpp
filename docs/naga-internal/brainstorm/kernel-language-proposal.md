@@ -76,3 +76,17 @@ Core items: builder frame kept; structure vs bound values kept (repeat levels, u
 5. Depth as structure or bound value. Options: kh.repeat (default, recompiles never); host loop only (each depth a new structure and a recompile). Changes: cache behaviour for launch-valued depth.
 6. Fan-in as a template argument or a launch value. Options: template (default for tiles<K>, compile-time shape checks); launch value (fewer recompiles, checks when the builder runs). Changes: when shape errors are reported.
 7. Names: node, source, from, units, parallel / fused / shared. Options: these (default) or others. Changes: vocabulary only.
+
+## Decisions in discussion (stage 2)
+
+### D1 Native shape: derivable, never required (Jack, 2026-11-23)
+- A node needs a group shape only when it has an edge with fan-in (tiles, window, rows, cols, all, ids, before) or a collective in its body (reduce, scan, contract, bin_count). A kernel with no such node lowers to a plain range parallel_for; the work-group size is the runtime's.
+- When a kernel needs groups: one unit runs on one native work-group (from a ticket or as a continuation); a unit's width is the size of its largest delivered input or of its product, whichever is larger; the native group size is the largest width in the kernel, and units of smaller width leave items idle; units with no fan-in and no collective are packed into those groups by a fixed rule; the grid is the number of units that start from a ticket.
+- A width (tiling) override is optional configuration on a node, never required.
+- The user never has to state a work-group shape, but can always derive the native shape from the source by these rules.
+- Replaces: "the toolchain decides how many work-items a unit uses" in The language, and the tiled rewrite of kh.map discussed for kernel 1 (kh.map stays without a tile).
+
+### D2 All sizes are runtime values (Jack, 2026-11-23)
+- Fan-ins, tile and window sizes, bin counts and tree fan-ins are runtime arguments: sg::tiles(4), sg::window(64, 1), sg::bin_count(16), kh.reduce_tree(x, 4, op). No sizes as template parameters. Ranks stay in the types; extents are dynamic.
+- They are bound values: changing them never recompiles. Shape errors are reported when the builder runs, naming the node. Constant specialisation, where it pays, is the JIT's (AdaptiveCpp adaptivity), never the user's.
+- Settles open question 6 (launch values). All tiles<K>, window<K, H>, bin_count<16>, reduce_tree<K> in this document read as their runtime forms.
