@@ -11,6 +11,8 @@
 #include "hipSYCL/runtime/metal/metal_code_object.hpp"
 
 #include <Metal/Metal.hpp>
+#include <string>
+#include <vector>
 
 #undef nil
 

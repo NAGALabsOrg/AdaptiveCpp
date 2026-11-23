@@ -16,6 +16,8 @@
 #include "hipSYCL/runtime/kernel_configuration.hpp"
 #include "hipSYCL/runtime/util.hpp"
 #include "hipSYCL/runtime/kernel_cache.hpp"
+#include <vector>
+#include <string>
 
 namespace hipsycl {
 namespace rt {

@@ -17,6 +17,7 @@
 #include <string>
 #include <fstream>
 #include <optional>
+#include <vector>
 
 namespace hipsycl {
 namespace rt {

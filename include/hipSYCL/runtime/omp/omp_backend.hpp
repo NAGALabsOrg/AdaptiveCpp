@@ -15,6 +15,8 @@
 #include "../multi_queue_executor.hpp"
 #include "omp_allocator.hpp"
 #include "omp_hardware_manager.hpp"
+#include <memory>
+#include <string>
 
 namespace hipsycl {
 namespace rt {

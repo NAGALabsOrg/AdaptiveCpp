@@ -12,6 +12,8 @@
 #define HIPSYCL_OMP_HARDWARE_MANAGER_HPP
 
 #include "../hardware.hpp"
+#include <vector>
+#include <string>
 
 namespace hipsycl {
 namespace rt {

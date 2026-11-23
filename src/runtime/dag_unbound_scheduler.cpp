@@ -16,6 +16,7 @@
 #include "hipSYCL/runtime/error.hpp"
 #include "hipSYCL/runtime/hints.hpp"
 #include "hipSYCL/runtime/hardware.hpp"
+#include <vector>
 
 namespace hipsycl {
 namespace rt {

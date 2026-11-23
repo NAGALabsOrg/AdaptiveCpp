@@ -14,6 +14,8 @@
 #include "../backend.hpp"
 #include "../multi_queue_executor.hpp"
 #include "hipSYCL/runtime/metal/metal_hardware_manager.hpp"
+#include <memory>
+#include <string>
 
 namespace hipsycl {
 namespace rt {

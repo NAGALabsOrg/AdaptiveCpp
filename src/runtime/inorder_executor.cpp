@@ -14,6 +14,7 @@
 #include "hipSYCL/runtime/inorder_queue.hpp"
 #include "hipSYCL/runtime/operations.hpp"
 #include "hipSYCL/runtime/serialization/serialization.hpp"
+#include <memory>
 
 namespace hipsycl {
 namespace rt {

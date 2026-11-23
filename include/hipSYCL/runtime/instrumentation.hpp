@@ -20,6 +20,8 @@
 #include <type_traits>
 
 #include "signal_channel.hpp"
+#include <atomic>
+#include <memory>
 
 namespace hipsycl {
 namespace rt {

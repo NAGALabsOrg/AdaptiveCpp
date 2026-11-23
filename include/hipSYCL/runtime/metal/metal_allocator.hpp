@@ -16,6 +16,8 @@
 
 #include <map>
 #include <memory>
+#include <cstddef>
+#include <mutex>
 
 namespace MTL {
 

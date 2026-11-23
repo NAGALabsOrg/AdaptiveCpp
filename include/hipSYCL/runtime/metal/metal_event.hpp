@@ -14,6 +14,7 @@
 #include "../inorder_queue_event.hpp"
 #include "../signal_channel.hpp"
 #include <memory>
+#include <cstdint>
 
 namespace MTL {
 class CommandBuffer;

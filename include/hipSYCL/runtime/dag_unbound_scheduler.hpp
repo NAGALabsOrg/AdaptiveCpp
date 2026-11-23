@@ -13,6 +13,7 @@
 
 #include "dag_node.hpp"
 #include "dag_direct_scheduler.hpp"
+#include <vector>
 
 namespace hipsycl {
 namespace rt {

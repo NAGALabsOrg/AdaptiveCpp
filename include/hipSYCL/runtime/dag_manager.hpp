@@ -18,6 +18,7 @@
 #include "dag_direct_scheduler.hpp"
 #include "dag_unbound_scheduler.hpp"
 #include "dag_submitted_ops.hpp"
+#include <memory>
 
 
 namespace hipsycl {

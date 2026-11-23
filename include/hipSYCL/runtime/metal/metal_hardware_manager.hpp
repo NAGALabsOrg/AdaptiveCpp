@@ -15,6 +15,11 @@
 
 #include "metal_queue.hpp"
 #include "metal_allocator.hpp"
+#include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <string>
+#include <vector>
 
 namespace MTL {
 

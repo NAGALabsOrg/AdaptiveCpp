@@ -20,6 +20,8 @@
 #include "hipSYCL/runtime/runtime_event_handlers.hpp"
 #include <cstdint>
 #include <limits>
+#include <vector>
+#include <string>
 
 
 namespace hipsycl {

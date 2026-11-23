@@ -9,6 +9,7 @@
  */
 // SPDX-License-Identifier: BSD-2-Clause
 #include "hipSYCL/runtime/omp/omp_event.hpp"
+#include <memory>
 
 
 namespace hipsycl {

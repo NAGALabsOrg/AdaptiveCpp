@@ -11,6 +11,8 @@
 #include "hipSYCL/runtime/error.hpp"
 #include "hipSYCL/runtime/application.hpp"
 #include "hipSYCL/runtime/async_errors.hpp"
+#include <memory>
+#include <string>
 
 namespace hipsycl {
 namespace rt {

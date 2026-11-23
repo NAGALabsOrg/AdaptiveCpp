@@ -9,6 +9,8 @@
  */
 // SPDX-License-Identifier: BSD-2-Clause
 #include "hipSYCL/runtime/kernel_configuration.hpp"
+#include <unordered_map>
+#include <string>
 
 namespace hipsycl {
 namespace rt {

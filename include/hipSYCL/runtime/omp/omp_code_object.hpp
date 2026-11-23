@@ -19,6 +19,7 @@
 #include "hipSYCL/runtime/error.hpp"
 #include "hipSYCL/runtime/kernel_cache.hpp"
 #include "hipSYCL/runtime/util.hpp"
+#include <unordered_map>
 
 
 namespace hipsycl {

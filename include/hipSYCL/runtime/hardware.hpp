@@ -14,6 +14,7 @@
 #include <string>
 
 #include "device_id.hpp"
+#include <vector>
 
 namespace hipsycl {
 namespace rt {

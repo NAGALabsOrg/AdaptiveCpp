@@ -23,6 +23,8 @@
 #include "hipSYCL/runtime/hints.hpp"
 #include "inorder_executor.hpp"
 #include "generic/multi_event.hpp"
+#include <vector>
+#include <memory>
 
 namespace hipsycl {
 namespace rt {

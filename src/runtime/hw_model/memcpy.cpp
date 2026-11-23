@@ -10,6 +10,7 @@
 // SPDX-License-Identifier: BSD-2-Clause
 #include "hipSYCL/runtime/hw_model/memcpy.hpp"
 #include <limits>
+#include <vector>
 
 
 namespace hipsycl {

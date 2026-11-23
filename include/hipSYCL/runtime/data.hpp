@@ -24,6 +24,8 @@
 #include "device_id.hpp"
 #include "util.hpp"
 #include "allocator.hpp"
+#include <functional>
+#include <memory>
 
 namespace hipsycl {
 namespace rt {

@@ -20,6 +20,8 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <vector>
+#include <string>
 
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <link.h>

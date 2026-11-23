@@ -14,6 +14,8 @@
 #include "hipSYCL/runtime/operations.hpp"
 #include "hipSYCL/runtime/application.hpp"
 #include "hipSYCL/runtime/allocator.hpp"
+#include <vector>
+#include <mutex>
 
 namespace hipsycl {
 namespace rt {

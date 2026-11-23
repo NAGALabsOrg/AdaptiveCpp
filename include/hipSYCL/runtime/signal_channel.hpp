@@ -13,6 +13,7 @@
 
 #include <future>
 #include <chrono>
+#include <atomic>
 
 
 namespace hipsycl {

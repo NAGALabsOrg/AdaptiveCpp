@@ -38,6 +38,7 @@
 #include "hipSYCL/runtime/device_id.hpp"
 #include "hipSYCL/runtime/error.hpp"
 #include "hipSYCL/runtime/settings.hpp"
+#include <vector>
 
 namespace hipsycl {
 namespace rt {

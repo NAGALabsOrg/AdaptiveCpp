@@ -14,6 +14,8 @@
 #include "hipSYCL/runtime/dag_submitted_ops.hpp"
 #include "hipSYCL/runtime/dag_node.hpp"
 #include "hipSYCL/runtime/hints.hpp"
+#include <vector>
+#include <mutex>
 
 namespace hipsycl {
 namespace rt {

@@ -20,6 +20,10 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include <sys/sysctl.h>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
 
 namespace hipsycl {
 namespace rt {

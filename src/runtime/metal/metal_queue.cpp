@@ -19,6 +19,14 @@
 
 #include <Metal/Metal.hpp>
 #include <utility>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
 
 #undef nil
 

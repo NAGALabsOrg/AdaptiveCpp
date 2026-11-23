@@ -14,6 +14,7 @@
 #include "hipSYCL/runtime/inorder_queue.hpp"
 #include "hipSYCL/runtime/instrumentation.hpp"
 #include "hipSYCL/runtime/event.hpp"
+#include <memory>
 
 namespace hipsycl {
 namespace rt {

@@ -22,6 +22,9 @@
 #include "hipSYCL/runtime/generic/multi_event.hpp"
 #include "hipSYCL/runtime/serialization/serialization.hpp"
 #include "hipSYCL/runtime/allocator.hpp"
+#include <vector>
+#include <functional>
+#include <memory>
 
 namespace hipsycl {
 namespace rt {

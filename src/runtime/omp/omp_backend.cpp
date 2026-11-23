@@ -18,6 +18,7 @@
 #include "hipSYCL/runtime/error.hpp"
 #include "hipSYCL/runtime/multi_queue_executor.hpp"
 #include <memory>
+#include <string>
 
 
 HIPSYCL_PLUGIN_API_EXPORT

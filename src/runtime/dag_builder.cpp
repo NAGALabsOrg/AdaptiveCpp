@@ -18,6 +18,7 @@
 
 #include <mutex>
 #include <utility>
+#include <memory>
 
 // TODO: Implement the following optimization:
 // - Reorder requirements such that larger accesses come first. This will cause

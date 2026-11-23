@@ -18,6 +18,7 @@
 #include "hipSYCL/common/spin_lock.hpp"
 #include "hipSYCL/glue/llvm-sscp/jit.hpp"
 #include "hipSYCL/glue/llvm-sscp/jit-reflection/reflection_map.hpp"
+#include <memory>
 #include <mutex>
 
 namespace hipsycl {

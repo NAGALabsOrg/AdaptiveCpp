@@ -17,6 +17,7 @@
 #include "hints.hpp"
 #include "event.hpp"
 #include "hipSYCL/common/small_vector.hpp"
+#include <functional>
 
 
 namespace hipsycl {

@@ -16,6 +16,7 @@
 #include "hipSYCL/runtime/operations.hpp"
 #include "hipSYCL/runtime/util.hpp"
 #include "hipSYCL/runtime/dag.hpp"
+#include <functional>
 
 namespace hipsycl {
 namespace rt {

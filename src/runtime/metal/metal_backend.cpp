@@ -10,6 +10,8 @@
 // SPDX-License-Identifier: BSD-2-Clause
 #include "hipSYCL/runtime/backend_loader.hpp"
 #include "hipSYCL/runtime/metal/metal_backend.hpp"
+#include <memory>
+#include <string>
 
 #include <Metal/Metal.hpp>
 

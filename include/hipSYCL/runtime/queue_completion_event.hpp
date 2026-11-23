@@ -16,6 +16,8 @@
 #include "hipSYCL/runtime/event.hpp"
 #include "inorder_queue_event.hpp"
 #include "inorder_queue.hpp"
+#include <atomic>
+#include <memory>
 
 
 namespace hipsycl {

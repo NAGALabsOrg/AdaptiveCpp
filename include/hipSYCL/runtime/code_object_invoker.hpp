@@ -18,6 +18,7 @@
 #include "util.hpp"
 #include "kernel_cache.hpp"
 #include "operations.hpp"
+#include <string>
 
 namespace hipsycl {
 namespace rt {

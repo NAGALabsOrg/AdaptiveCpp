@@ -24,6 +24,7 @@
 #include "hipSYCL/runtime/device_id.hpp"
 #include "hipSYCL/runtime/error.hpp"
 #include "hipSYCL/runtime/kernel_configuration.hpp"
+#include <vector>
 
 namespace hipsycl {
 namespace rt {

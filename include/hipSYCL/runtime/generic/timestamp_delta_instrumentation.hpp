@@ -13,6 +13,7 @@
 
 #include "../event.hpp"
 #include "host_timestamped_event.hpp"
+#include <memory>
 
 
 namespace hipsycl {

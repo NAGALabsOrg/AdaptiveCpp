@@ -17,6 +17,8 @@
 #include "hipSYCL/runtime/kernel_cache.hpp"
 
 #include <algorithm>
+#include <exception>
+#include <memory>
 
 namespace hipsycl {
 namespace rt {

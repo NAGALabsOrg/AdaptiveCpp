@@ -17,6 +17,9 @@
 #include "hipSYCL/runtime/hints.hpp"
 #include "hipSYCL/runtime/operations.hpp"
 #include "hipSYCL/runtime/generic/multi_event.hpp"
+#include <vector>
+#include <functional>
+#include <memory>
 
 namespace hipsycl {
 namespace rt {

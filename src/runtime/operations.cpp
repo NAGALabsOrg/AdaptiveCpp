@@ -11,6 +11,7 @@
 #include "hipSYCL/runtime/operations.hpp"
 #include "hipSYCL/runtime/dag_node.hpp"
 #include "hipSYCL/runtime/instrumentation.hpp"
+#include <memory>
 
 namespace hipsycl {
 namespace rt {

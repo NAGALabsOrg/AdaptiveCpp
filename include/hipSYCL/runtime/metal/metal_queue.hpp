@@ -22,6 +22,12 @@
 #include "metal_event.hpp"
 
 #include <mach/mach_time.h>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string_view>
 #include <mutex>
 
 namespace MTL {

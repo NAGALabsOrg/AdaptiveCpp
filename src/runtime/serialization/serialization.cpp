@@ -17,6 +17,7 @@
 
 #include <map>
 #include <ostream>
+#include <string>
 
 namespace hipsycl::rt {
 

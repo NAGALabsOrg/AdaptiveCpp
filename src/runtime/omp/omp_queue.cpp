@@ -51,6 +51,8 @@
 
 #include <memory>
 #include <optional>
+#include <vector>
+#include <string>
 
 namespace hipsycl {
 namespace rt {

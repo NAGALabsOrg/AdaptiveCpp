@@ -15,6 +15,9 @@
 #include "hipSYCL/runtime/error.hpp"
 #include "hipSYCL/runtime/device_id.hpp"
 #include "hipSYCL/runtime/omp/omp_phys_mem.hpp"
+#include <vector>
+#include <exception>
+#include <string>
 
 namespace hipsycl {
 namespace rt {

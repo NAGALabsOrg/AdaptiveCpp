@@ -18,6 +18,7 @@
 #include <ostream>
 #include <sstream>
 #include <map>
+#include <string>
 
 namespace hipsycl::rt {
 std::ostream &operator<<(std::ostream &out, const hardware_platform value);
