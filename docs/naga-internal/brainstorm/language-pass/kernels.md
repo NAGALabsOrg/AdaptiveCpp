@@ -277,7 +277,7 @@ C_out = kh.evaluate(C_elems);
 ```
 
 Work-groups: 2048 groups of {16, 16, 4} = 1024; the stages use 64 work-items of each segment. Item p of a product run and item p of a stage run fall in the same segment (p / 4), so the segmented stages are pulled within their segment (W12). The reduce in dot_items is joined across 32 segments: the last segment waits on the others' partials (global, W12).
-Placement: A, B global inputs; a_stage, b_stage segmented local (W12, P24); per-segment partials global; C result memory.
+Placement: A, B global inputs; a_stage, b_stage segmented local (W12, P14); per-segment partials global; C result memory.
 Run mode: the stages run distributed (item p of the product reads stage position p, in its own segment); run_replicated would give every segment all 128 positions at 32 x the stage work.
 Trace: C[3][5]: work tile (0, 0), unit (3, 5); a_stage row 3 is A row 3 (all 3s), b_stage row 5 is B column 5 (all 5s); 32 segment partials of 4 x 15 = 60 each, joined 1920. C[127][127] = 2064512.
 

@@ -120,7 +120,7 @@ Per kernel, the graph and its order: K1, K2: each slice task depends on level ta
 | F19 | K9-K11 | element-wise work without sharing: the earlier kh.map range launch is not in the seed | wrong approach to add it: runs on a work set keep chained values in registers | no new primitive; Q8 |
 | F20 | K10 | n known only at run time may not divide the tile | approach right | builder error (default); Q6 |
 | F21 | K5, K7 | D8's run-time check of data-chosen pulls within a set | superseded by D9 | the tile graph rejects such kernels when the builder runs; nothing is left to check on the device |
-| F22 | K6, K14 | splitting runs after construction, and retiling work, do not fit fixed work tiles (Jack) | wrong approach | segmented runs at construction (P21 sg::segment_items, P24) |
+| F22 | K6, K14 | splitting runs after construction, and retiling work, do not fit fixed work tiles (Jack) | wrong approach | segmented runs at construction (P21 sg::segment_items, P14 with sg::segmented) |
 | F23 | K6 | a segmented stage read at other segments' positions needs the whole stage in each segment | approach right | unit.run_replicated (P26); K6 does not need it (distributed suffices) |
 
 ## 6. Review of decisions
