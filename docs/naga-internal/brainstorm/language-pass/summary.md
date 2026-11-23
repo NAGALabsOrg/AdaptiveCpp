@@ -1,10 +1,10 @@
-# The revised kernel language: summary for agreement
+# The revised kernel language: summary for agreement (v2)
 
-This page is all you need to read. The full record (every kernel with its trace, the mechanisms, the misfit log, the review) is in record.md and kernels.md beside it.
+This page is all you need to read; delta.md lists what changed since v1. The full record (every kernel with its trace, the mechanisms, the misfit log, the review) is in record.md and kernels.md beside it.
 
 ## The language
 
-A kernel tiles its data, declares work tiles (each one a native work-group), and maps work over them. A work tile holds work units; each unit runs a 1-D run of items (native work-items). A unit body is host code that picks tiles; the function given to unit.run is the only device code.
+A kernel tiles its data, declares work tiles (each one or more native work-groups, chosen at construction), and maps work over them. A work tile holds work units; each unit runs a 1-D run of items (native work-items). A unit body is host code that picks tiles; the function given to unit.run is the only device code.
 
 | primitive | meaning |
 |---|---|
@@ -15,12 +15,13 @@ A kernel tiles its data, declares work tiles (each one a native work-group), and
 | kh.extend_tiles(t, shape, sg::repeat) | each tile broadcast to shape |
 | kh.define_tiles(n, shape, fn(t, s)) | index tiles from a host function |
 | kh.stencil(offsets, roots) | index tiles: each root plus each offset |
-| kh.index_map(map, oob, elements) | each index replaced by its element; out of range goes to oob (sg::fill, sg::wrap) |
+| kh.index_map(map, oob, elements) | each index replaced by its element; out of range goes to oob |
 | kh.work_tiles(grid, tile_shape, run) | one native group per grid point, shape tile_shape ++ run (at most 3-D) |
+| sg::segment_items(segments, items) | a run of segments x items, each segment its own native group |
 | kh.slice_work(work, offset, extent, stride, tile_shape, run) | reuse a subset of a work set's groups, possibly with a new shape |
 | kh.map_work(work, body(unit)) | body per unit on the host; one result tile per work tile |
-| kh.split_runs(result, pieces) | fit the cap: cut every run into pieces, one partial per piece |
 | kh.mark_local(result) | hold a result in local memory for other units of its work tile |
+| kh.mark_local_segmented(result) | the same on a segmented work tile, held per segment |
 | kh.repeat(n, start, fn) | one structure applied n times; n a bound value |
 | kh.evaluate(elements) | assign to a result (inplace results combine) |
 | unit.tile() / unit.id() | the unit's work tile / its position in the tile |
@@ -30,10 +31,10 @@ A kernel tiles its data, declares work tiles (each one a native work-group), and
 | sg::tile_bin(item, v, bins, key) | counts per bin over the run; a run of bins values |
 
 Rules:
-- A result tile pulled by the work tile that made it stays a value, in local memory (if marked), or is recomputed; pulled by any other work tile it goes through global memory.
+- A result pulled by the work tile that made it stays a value, in local memory (if marked), or is recomputed; pulled by any other work tile it goes through global memory.
 - One launch has one native group size, the largest; smaller work tiles leave work-items unused.
 - Pulls form a dependency graph between tiles; a tile chosen from kernel data depends on every tile of its source set. The toolchain orders the native groups so each tile waits only on groups ahead of it; if no order exists, the builder rejects the kernel naming the cycle, and you break it with another work set. So data-chosen pulls only go from one work set to another.
-- Over the device's group cap: retile the work, or split the runs and join the pieces. The data tiling never changes.
+- Over the device's group cap, at construction: build different work tiles, or segment the run. Segmenting is a contract: collectives over the run are joined across segments with a global dependency, and local memory is segmented (kh.mark_local_segmented). The data tiling never changes.
 
 ## Four kernels
 
@@ -54,7 +55,7 @@ auto l3          = sum_tiles(kh, work3, l2_tiles);                // 1 result ti
 auto total_elems = kh.join(l3);
 total = kh.evaluate(total_elems);
 ```
-16 groups of 4 work-items. Each level-2 tile pulls only lower tiles and its own; the level-1 sums it made itself stay values, the other three go through global memory. Traced: 2016.
+16 groups of 4 work-items. Each level-2 tile keeps the level-1 sum it made itself as a value; the other three come through global memory. Traced: 2016.
 
 **Gather from values computed in the kernel: a data-chosen pull.**
 ```cpp
@@ -82,35 +83,34 @@ auto y_rows  = kh.retile(y, {64});
 auto y_elems = kh.join(y_rows);
 y_out = kh.evaluate(y_elems);
 ```
-8 groups. The gather is a later set, so it may pull any src tile; each item waits on the tile its index chose. Traced: y[1] = 14, y[37] = 6.
+8 groups. The gather is its own later set, so it may pull any src tile; each item waits on the tile its index chose. Traced: y[1] = 14, y[37] = 6.
 
-**Matrix product, 128 x 128: staged in local memory, retiled to fit the cap.**
+**Matrix product, 128 x 128: 16 x 16 outputs, segmented run, segmented local stages.**
 ```cpp
 auto a_bands = kh.tile(A, {16, 128});                             // 8 x 1 tiles
 auto b_bands = kh.tile(B, {128, 16});                             // 1 x 8 tiles
-auto work    = kh.work_tiles({64, 32}, {2, 4}, 128);              // 2 x 4 outputs x 128 = 1024 per group
-auto a_work  = kh.slice_work(work, {0, 0}, {64, 32}, {1, 1}, {2}, 128);
+auto run     = sg::segment_items(32, 4);                          // 128 items in 32 segments of 4
+auto work    = kh.work_tiles({8, 8}, {16, 16}, run);              // 2048 groups of 16 x 16 x 4
+auto a_work  = kh.slice_work(work, {0, 0}, {8, 8}, {1, 1}, {16}, run);
 auto a_stage = kh.map_work(a_work, [=](auto unit) {
   auto t      = unit.tile();
   auto u      = unit.id();
-  auto row    = 2 * t[0] + u[0];
-  auto a_band = a_bands[{row / 16, 0}];
-  auto a_row  = sg::slice(a_band, {row % 16, 0}, {1, 128});
+  auto a_band = a_bands[{t[0], 0}];
+  auto a_row  = sg::slice(a_band, {u[0], 0}, {1, 128});
   auto a_run  = sg::flatten(a_row);
   return unit.run(a_run, pass_items);
-});                                                               // this tile's 2 rows of A
-kh.mark_local(a_stage);
-auto b_work  = kh.slice_work(work, {0, 0}, {64, 32}, {1, 1}, {4}, 128);
+});                                                               // this tile's 16 rows of A
+kh.mark_local_segmented(a_stage);
+auto b_work  = kh.slice_work(work, {0, 0}, {8, 8}, {1, 1}, {16}, run);
 auto b_stage = kh.map_work(b_work, [=](auto unit) {
   auto t      = unit.tile();
   auto u      = unit.id();
-  auto col    = 4 * t[1] + u[0];
-  auto b_band = b_bands[{0, col / 16}];
-  auto b_col  = sg::slice(b_band, {0, col % 16}, {128, 1});
+  auto b_band = b_bands[{0, t[1]}];
+  auto b_col  = sg::slice(b_band, {0, u[0]}, {128, 1});
   auto b_run  = sg::flatten(b_col);
   return unit.run(b_run, pass_items);
-});                                                               // this tile's 4 columns of B
-kh.mark_local(b_stage);
+});                                                               // this tile's 16 columns of B
+kh.mark_local_segmented(b_stage);
 auto C_tiles = kh.map_work(work, [=](auto unit) {
   auto t     = unit.tile();
   auto u     = unit.id();
@@ -121,55 +121,51 @@ auto C_tiles = kh.map_work(work, [=](auto unit) {
   auto a_run = sg::flatten(a_row);
   auto b_run = sg::flatten(b_row);
   return unit.run(a_run, b_run, dot_items);
-});                                                               // 64 x 32 result tiles of {2, 4}
+});                                                               // 8 x 8 result tiles of {16, 16}
 auto C_elems = kh.join(C_tiles);
 C_out = kh.evaluate(C_elems);
 ```
-2048 groups of 1024 work-items. 16 x 16 outputs per tile would need 32768, so the work is retiled; the bands stay as they were.
 
 | value | lives in | because |
 |---|---|---|
 | A, B | global | inputs |
-| a_stage, b_stage | local | other units of the same work tile pull them; marked |
-| products in a run | registers | each unit's own |
+| a_stage, b_stage | segmented local | other units of the same segment read them; marked |
+| products in a run | registers | each item's own |
+| partial sums per segment | global | the reduce crosses segments |
 | C | result memory | evaluated |
 
-Traced: C[3][5] = 1920, C[127][127] = 2064512.
+Item p of a product run and item p of a stage run fall in the same segment, so the stages never leave local memory. Traced: C[3][5] = 1920, C[127][127] = 2064512.
 
-**Row sums at a cap of 256: split the runs, join the pieces.**
+**Row sums at a cap of 256: a segmented run, no join code.**
 ```cpp
 auto rows = kh.tile(x, {1, 1024});                                // 64 x 1 tiles
-auto work = kh.work_tiles({64}, {1}, 1024);                       // 1024 per group: too big at 256
+auto run  = sg::segment_items(4, 256);                            // 1024 items in 4 segments of 256
+auto work = kh.work_tiles({64}, {1}, run);                        // 256 groups of 1 x 256
 auto sums = kh.map_work(work, [=](auto unit) {
   auto t   = unit.tile();
   auto row = rows[{t[0], 0}];
-  auto run = sg::flatten(row);
-  return unit.run(run, sum_items);
-});
-auto pieces      = kh.split_runs(sums, 4);                        // 64 x 4 partials, runs of 256
-auto pieces_rows = kh.retile(pieces, {4});                        // 64 tiles of 4
-auto work_join   = kh.work_tiles({64}, {1}, 4);                   // a later set
-auto row_sums    = sum_tiles(kh, work_join, pieces_rows);
-auto row_elems   = kh.join(row_sums);
-y_out = kh.evaluate(row_elems);
+  auto r   = sg::flatten(row);
+  return unit.run(r, sum_items);
+});                                                               // 64 result tiles of {1}
+auto sums_elems = kh.join(sums);
+y_out = kh.evaluate(sums_elems);
 ```
-256 groups of 256 plus 64 of 4. The rows tiling is unchanged; the body of sums is unchanged. Traced: y[0] = 523776, y[63] = 588288, the same as unsplit.
+The same code as at cap 1024 except the run argument; the reduce is joined across each row's 4 segments. Traced: y[0] = 523776, y[63] = 588288.
 
 ## Decisions for you (defaults marked)
 
-1. Within one work set, may a map's runs be shorter than the set's run, the other items idle (the scan takes each tile's total on its own group this way)? (a, default) yes; (b) no, a shorter run needs its own work set.
+1. Within one work set, may a map's runs be shorter than the set's run, the other items idle (the scan takes each tile's total this way)? (a, default) yes; (b) no, a shorter run needs its own work set.
 2. A tile size that does not divide its array: (a, default) a builder error naming the node; (b) a partial last tile filled by an oob policy.
-3. You used "slice" for two things: reusing a subset of a work set's groups, and cutting runs to fit the cap. (a, default) kh.slice_work for the subset, kh.split_runs for the cap; (b) the other way round; (c) other names.
-4. Element-wise work with nothing shared is written as runs on a work set. (a, default) only that; (b) also keep kh.map as a plain range launch for kernels with no work sets.
-5. Sharing an input tile in local memory is a copy pass on a slice of the same work set, marked local (the matrix product). (a, default) as written; (b) a primitive that marks an input tile local for a work set.
+3. Element-wise work with nothing shared is written as runs on a work set. (a, default) only that; (b) also keep kh.map as a plain range launch for kernels with no work sets.
+4. Sharing an input tile in local memory is a copy pass on a slice of the same work set, marked local (the matrix product). (a, default) as written; (b) a primitive that marks an input tile local for a work set.
 
 ## What changed since the early check
 
-- Work units hold runs of items (names swapped); a work tile is a fixed native group.
-- kh.reuse_work is gone; groups are reused by slicing a work set (kh.slice_work), with any shape that fits.
-- Runs are an extra dimension of a result tile.
+- Work units hold runs of items (names swapped); a work tile is a fixed set of native groups chosen at construction.
+- Groups are reused by slicing a work set (kh.slice_work), with any shape that fits.
+- Runs are an extra dimension of a result tile; a run may be segmented across native groups (sg::segment_items), with collectives joined across segments and segmented local memory.
 - The scan is 16 groups of 64; only the gathered totals cross tiles.
 - Pulls form a tile dependency graph that the toolchain orders; a kernel with no valid order is rejected when the builder runs; data-chosen pulls only cross work sets.
-- New: kh.split_runs (cap fitting), kh.stencil, sg::tile_bin as a run collective; unit.id is used by the stencils, the matrix product and interpolation.
+- New: kh.stencil, sg::tile_bin as a run collective, sg::segment_items, kh.mark_local_segmented; unit.id is used by the stencils, the matrix product and interpolation.
 - Element-wise chains are runs on a work set; no plain kh.map.
 - All 14 kernels are written and traced (kernels.md).

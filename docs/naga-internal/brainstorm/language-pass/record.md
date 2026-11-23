@@ -4,7 +4,7 @@ Plan sg-language-pass, carried out by the Research Lead. Jack is not required to
 
 ## 1. Rule ledger
 
-Sources: docs/naga-internal/brainstorm/kernel-model.md ("Agreed" 2-6), note sg-redesign-decisions (D2-D9, THE WORK MODEL, the backing and repeat entry), note toolchain-impl-design (topic 1, closed 2026-11-19; check-in 2026-11-21 for inplace). Where a later decision restates an earlier rule, the later governs.
+Sources: docs/naga-internal/brainstorm/kernel-model.md ("Agreed" 2-6), note sg-redesign-decisions (D2-D10, THE WORK MODEL, the backing and repeat entry), note toolchain-impl-design (topic 1, closed 2026-11-19; check-in 2026-11-21 for inplace). Where a later decision restates an earlier rule, the later governs.
 
 | id | rule | source |
 |---|---|---|
@@ -13,7 +13,7 @@ Sources: docs/naga-internal/brainstorm/kernel-model.md ("Agreed" 2-6), note sg-r
 | M2 | Work units in a tile are independent; this makes work sliceable. | kernel-model Agreed 2 |
 | M3 | A work unit's parallelism is one-dimensional: a run of items; its result is one value (a reduce) or a run (element-wise, scan, binning). | Agreed 3, D7 X1 |
 | M4 | Data is tiled by the problem, never by the device. | Agreed 4 |
-| M5 | A work tile maps to one native work-group; over the device cap the user retiles the work or slices the runs and joins the pieces; sliced work's data is derived from the unsliced work; data tiling never changes. | Agreed 5 |
+| M5 | A work tile maps to native work-groups chosen at construction; over the device cap the user builds different work tiles or segments the run (sg::segment_items); the data tiling never changes. | Agreed 5, D10 |
 | M6 | The user decides memory backing through this structure. | Agreed 6 |
 | D2 | All sizes are runtime, bound values; ranks are in types; shape errors are reported when the builder runs, naming the node. | D2 |
 | D3 | Elements and tiles are explicit; tile, retile, join, extend_tiles; evaluate takes elements. | D3 |
@@ -30,6 +30,7 @@ Sources: docs/naga-internal/brainstorm/kernel-model.md ("Agreed" 2-6), note sg-r
 | W9 | The run is an extra dimension: native group shape = tile shape ++ run; at most 3-D; a 3-D tile has a run of one item and no run argument. | D7 X4 |
 | W10 | What users share is how they think about the problem; the language does not enforce it. | D7 X5 |
 | W11 | Pulls form a dependency graph between tiles: an edge from each pulled tile to the tile that pulls it; a pull the host cannot see (a tile chosen from kernel data) is an edge from every tile of the source work set. Each native group runs its tasks (its tile of a set, then any slice tasks) in map order. The toolchain orders the native groups so that every edge comes from an earlier group or an earlier task of the same group; if no order exists the builder rejects the kernel, naming the tiles on the cycle, and the user breaks it with another work set. So data-chosen pulls only ever go from one work set to another. | D9 |
+| W12 | A segmented work tile is one native group per segment, each of tile shape x items per segment. Segmenting is a contract: collectives over the run are joined across segments with a global dependency (edges from earlier segments in the tile graph), and local memory is segmented (kh.mark_local_segmented), held per segment; plain kh.mark_local does not apply. | D10 |
 
 ## 2. Glossary
 
@@ -47,7 +48,7 @@ Sources: docs/naga-internal/brainstorm/kernel-model.md ("Agreed" 2-6), note sg-r
 | P02 | kh.tile(x, shape) | elements, shape | tiles, with .count() | host view | D3, D2 | x's elements in row-major tiles of shape; extents must divide (Q6); .count() the number of tiles (bound) |
 | P03 | kh.retile(t, shape) | tiles, shape | tiles | host view | D3 | t's elements, in tile order, regrouped into tiles of shape |
 | P04 | kh.join(t) | tiles of the grid's rank | elements | host view | D3 | tiles stitched over the grid; grid and tile of different ranks are retiled first (F9) |
-| P05 | kh.work_tiles(grid, tile_shape, run) | shapes, count | work set | host | W1, W8, W9 | one native group per grid point, of shape tile_shape ++ run (at most 3-D; a 3-D tile_shape takes no run) |
+| P05 | kh.work_tiles(grid, tile_shape, run) | shapes, a run count or sg::segment_items | work set | host | W1, W8, W9 | one native group per grid point, of shape tile_shape ++ run (at most 3-D; a 3-D tile_shape takes no run) |
 | P06 | kh.map_work(work, body) | work set, host function of unit | result tiles | host | W1, W4, W9, W11 | body runs on the host once per unit to select tiles; one result tile per work tile: tile_shape if units return one value, tile_shape ++ run length if they return runs |
 | P07 | unit.run(inputs..., fn) | 1-D views of one length, device function | the unit's result | host call, fn device | W4, M3 | fn on every item with that item's element of each input; the run length is the inputs' length, at most the work set's run (Q5); one value if fn returns a collective reduce, else the run of fn's returns |
 | P08 | unit.tile() | | work tile id | host | W4 | the unit's work tile in the work set passed to map_work |
@@ -57,20 +58,22 @@ Sources: docs/naga-internal/brainstorm/kernel-model.md ("Agreed" 2-6), note sg-r
 | P12 | sg::reduce(item, v, op) | item, value, op | one value | device collective | M3 | v combined over all items of the run with op |
 | P13 | sg::inclusive_scan(item, v, op) | item, value, op | per-item value | device collective | M3 | v combined over items 0 to this one |
 | P14 | kh.mark_local(result) | result tiles | | host | W3, W2 | held in local memory for other units of the same work tile |
-| P15 | kh.slice_work(work, offset, extent, stride, tile_shape, run) | work set, shapes | work set | host | W1, W11 | the tiles offset + k * stride (k < extent) of work, reused on their groups, with a new tile shape and run that fit the group size; launches no groups |
+| P15 | kh.slice_work(work, offset, extent, stride, tile_shape, run) | work set, shapes | work set | host | W1, W11 | the tiles offset + k * stride (k < extent) of work, reused on their groups, with a new tile shape and run that fit the group size; launches no groups, run a count or sg::segment_items |
 | P16 | kh.define_tiles(tiles, shape, fn) | counts, host function | index tiles | host | D4 | tile t, slot s holds fn(t, s) |
 | P17 | kh.index_map(map, oob, elements) | index tiles, policy, elements | tiles view | host | D4, W5 | each index replaced by that element; out-of-range indices go to oob |
 | P18 | kh.extend_tiles(t, shape, how) | tiles, shape, policy | tiles view | host | D3 | each tile reshaped to shape (sg::repeat broadcasts) |
 | P19 | kh.evaluate(elements) | elements | a result | host | B1, B2, D3 | assigns the elements to a result (an inplace result combines) |
 | P20 | kh.repeat(n, start, fn) | bound count, value, host function | like start | host | W7 | fn recorded once, applied n times; counts derived from prev inside fn are bound per iteration |
-| P21 | kh.split_runs(result, pieces) | result tiles of a map, count | result tiles | host | M5 | the map runs on a new work set of grid ++ {pieces} with run / pieces; each piece takes its share of every run input; a reduce gives one partial per piece; the unsplit map is not run unless used |
+| P21 | sg::segment_items(segments, items) | counts | a run argument | host | W12 | a run of segments x items items in segments of items, each segment its own native group |
 | P22 | sg::tile_bin(item, v, bins, key) | item, value, count, device function | per-item count | device collective | D5, M3 | item b < bins gets the number of v in the run with key(v) == b; the result is a run of bins values (bins at most the run length) |
 | P23 | kh.stencil(offsets, roots) | offsets, a range | index tiles | host | D4 | one tile per root, holding root + each offset |
+| P24 | kh.mark_local_segmented(result) | result tiles of a segmented work set | | host | W12, W3 | holds the result in each segment's local memory; pulled only by items in the same segment |
 
 Changelog:
 - v1 2026-11-23: P01-P20.
 - v2 2026-11-23 (D7): X1 renames; P15 kh.reuse_work removed (X2); P05 native shape and rank-3 form (X3, X4); P06 result shape (X4); P07 shorter runs (Q5).
 - v3 2026-11-23 (D8 and the pass): P15 kh.slice_work added (W1, D8); P21 kh.split_runs added (F11); P22, P23 defined at first use; P04 requires equal ranks (F9); P20 clarified (bound counts per iteration, meaning unchanged); P02 divisibility (Q6). No meaning of a primitive used by an earlier record was changed except by Jack's corrections X1-X4.
+- v4 2026-11-23 (D10): kh.split_runs withdrawn (P21 is now sg::segment_items); P24 kh.mark_local_segmented added; P05, P15 take segmented runs; P14 kh.mark_local is rejected on segmented work tiles.
 
 ## 4. Mechanisms
 
@@ -81,11 +84,10 @@ Changelog:
 - One-tile slice: K7 sums all 16 partial histograms on work tile 15, the only tile allowed to pull all of its set (W11), as 16 units x 16 items.
 Group counts: K1 16 (shape {1, 4}); K6 2048 (shape {2, 4, 128}, stages use 256 and 512 work-items); K7 16 (shape {1, 256}, the slice uses 256).
 
-### 4.2 Fitting the work-group cap
-- Retiling the work: K6 at cap 1024: 16 x 16 units x 128 = 32768 becomes 2 x 4 units x 128 = 1024; the data tiling (A in 16-row bands, B in 16-column bands) is unchanged; the selection arithmetic changes; no join.
-- Splitting runs and joining: K14 at cap 256: rows of 1024 become 4 pieces of 256 (kh.split_runs), joined by a later work set of 64 units x 4 items; the data tiling (rows) is unchanged; traced result equals the unsplit result.
-- Scan: one run of 1024 fits at cap 1024; at cap 256 it becomes K3's tiles of 64 (retiling the work).
-- Builder error for an unfitted work set: "work set of kh.map_work at <location>: 16 x 16 x 128 = 32768 work-items exceeds the device's 1024".
+### 4.2 Fitting the work-group cap (D10)
+- Different work tiles, chosen at construction: K6 built as 2 x 4 outputs x 128 = 1024 per group; no cross-segment cost.
+- Segmented run: K6 with 16 x 16 outputs and sg::segment_items(32, 4): 2048 groups of 1024; the stages are segmented local and each item reads its own segment; the dot-product reduce is joined across 32 segments (global). K14 at cap 256 with sg::segment_items(4, 256): the reduce is joined across 4 segments; no join code.
+- Builder error for an unfitted work set: "work set of kh.map_work at <location>: 16 x 16 x 128 = 32768 work-items exceeds the device's 1024; build smaller work tiles or segment the run".
 
 ### 4.3 The tile dependency graph (W11)
 Per kernel, the graph and its order: K1, K2: each slice task depends on level tasks of lower groups; order = tile order. K3: tile t depends on tiles 0..t-1; order = tile order. K5: every work_y group depends on every work_src group (data-chosen pulls); work_src first. K7: group 15's slice task depends on all 16 groups; order = tile order. K8: F on the same set as E would make groups t and 3 - t depend on each other, a cycle, so F is its own set, ordered after. K14: work_join after the pieces. No kernel as written is rejected.
@@ -115,6 +117,7 @@ Per kernel, the graph and its order: K1, K2: each slice task depends on level ta
 | F19 | K9-K11 | element-wise work without sharing: the earlier kh.map range launch is not in the seed | wrong approach to add it: runs on a work set keep chained values in registers | no new primitive; Q8 |
 | F20 | K10 | n known only at run time may not divide the tile | approach right | builder error (default); Q6 |
 | F21 | K5, K7 | D8's run-time check of data-chosen pulls within a set | superseded by D9 | the tile graph rejects such kernels when the builder runs; nothing is left to check on the device |
+| F22 | K6, K14 | splitting runs after construction, and retiling work, do not fit fixed work tiles (Jack) | wrong approach | segmented runs at construction (P21 sg::segment_items, P24) |
 
 ## 6. Review of decisions
 
@@ -138,7 +141,7 @@ Per kernel, the graph and its order: K1, K2: each slice task depends on level ta
 | Q4 | packing units that share nothing | | | | withdrawn (D7 X5) |
 | Q5 | Within one work set, may a map's runs be shorter than the set's run, the other items idle? | a: yes; b: no, a shorter run needs its own work set | a | P07, K3 | put; on the final page |
 | Q6 | A tile size that does not divide its array (n known at run time)? | a: builder error naming the node; b: a partial last tile filled by an oob policy | a | P02, K10 | on the final page |
-| Q7 | Names: kh.slice_work reuses a subset of a work set, kh.split_runs cuts runs to fit the cap. | a: as defined; b: swap; c: other names | a | P15, P21 | on the final page |
+| Q7 | Names: kh.slice_work reuses a subset of a work set, kh.split_runs cuts runs to fit the cap. | a: as defined; b: swap; c: other names | a | P15, P21 | withdrawn: kh.split_runs is gone, one meaning of slice remains (D10) |
 | Q8 | Element-wise work with nothing shared: written as runs on a work set (K9-K11). | a: only that; b: also keep kh.map as a plain range launch for kernels with no work sets | a | K9-K11 | on the final page |
 | Q9 | Sharing an input tile in local memory: a copy pass on a slice of the same work set, marked local (K6). | a: as written; b: a primitive marking an input tile local for a work set | a | K6 | on the final page |
 
@@ -151,6 +154,7 @@ Each option was traced on a dependent kernel: Q5b K3 with a 16-group totals set 
 | C1 | 2026-11-23 | early packet v1 | 127 lines (bound 120, over by 7: the scan kept uncompressed) | 4 (Q1-Q4) | corrections X1-X6 (D7); Q1, Q4 withdrawn; Q2 a; Q3 b |
 | C2 | 2026-11-23 | follow-up in conversation | | 1 (Q5) | none; work under the default |
 | C3 | 2026-11-23 | follow-up in conversation | | 1 (the ordering rule) | accepted with the data-chosen contract (D8) |
-| C4 | 2026-11-23 | final page | see summary.md | 5 (Q5-Q9) | pending |
+| C4 | 2026-11-23 | final page | see summary.md | 5 (Q5-Q9) | correction: segmented runs at construction (D10); delta page |
 | C5 | 2026-11-23 | in conversation | | 0 | the tile-graph rule (D9), replacing D8's run-time contract |
-Total questions put: 11.
+| C6 | 2026-11-23 | delta page | see delta.md | 0 new (4 remaining) | pending |
+Total questions put: 11 (Q7 withdrawn).

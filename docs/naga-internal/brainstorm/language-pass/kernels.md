@@ -184,7 +184,7 @@ Trace: y[1] = src[7] = 14; y[37] = src[259 mod 256 = 3] = 6.
 ## K6 Matrix product, 128 x 128
 
 Reference: `C[i][j] = sum over k of A[i][k] * B[k][j];` A[i][k] = i, B[k][j] = j: C[i][j] = 128ij; C[3][5] = 1920, C[127][127] = 2064512.
-Derivation (Jack's): output element (i, j) needs row i of A and column j of B; a block of outputs shares rows and columns, so A is tiled in row bands and B in column bands; each output is a unit whose run multiplies its row by its column and reduces. 16 x 16 outputs x 128 items = 32768 work-items exceeds the cap of 1024, so the work is retiled to 2 x 4 outputs per work tile (data tiling unchanged). The work tile's rows of A and columns of B are staged once on the same groups and marked local.
+Derivation (Jack's): output element (i, j) needs row i of A and column j of B; a block of outputs shares rows and columns, so A is tiled in row bands and B in column bands; each output is a unit whose run multiplies its row by its column and reduces. 16 x 16 outputs x 128 items = 32768 work-items exceeds the cap of 1024, so the work tiles are built as 2 x 4 outputs (data tiling unchanged); the segmented form below keeps 16 x 16. The work tile's rows of A and columns of B are staged once on the same groups and marked local.
 
 ```cpp
 auto A       = kh.source(A_in);                                   // 128 x 128
@@ -235,6 +235,50 @@ C_out = kh.evaluate(C_elems);
 Work-groups: 2048 groups of {2, 4, 128} = 1024 work-items; the stages use 256 and 512 of them. The stages are slices of the same set, pulled only by their own work tile.
 Placement: A, B global inputs; a_stage, b_stage local (pulled by other units of their own work tile, marked, W2, W3); products value; C result memory; bands, slices, C_elems views.
 Trace: C[3][5]: row 3 is work tile row 1, unit row 1; column 5 is work tile column 1, unit column 1; a_stage row 1 is A row 3 (all 3s); b_stage row 1 is B column 5 (all 5s); 128 x 15 = 1920. C[127][127] = 128 x 127 x 127 = 2064512.
+
+Segmented form, keeping Jack's 16 x 16 outputs per work tile:
+
+```cpp
+auto run     = sg::segment_items(32, 4);                          // 128 items in 32 segments of 4
+auto work    = kh.work_tiles({8, 8}, {16, 16}, run);              // 64 tiles x 32 segments = 2048 groups of 16 x 16 x 4
+auto a_work  = kh.slice_work(work, {0, 0}, {8, 8}, {1, 1}, {16}, run);
+auto a_stage = kh.map_work(a_work, [=](auto unit) {
+  auto t      = unit.tile();
+  auto u      = unit.id();
+  auto a_band = a_bands[{t[0], 0}];
+  auto a_row  = sg::slice(a_band, {u[0], 0}, {1, 128});
+  auto a_run  = sg::flatten(a_row);
+  return unit.run(a_run, pass_items);
+});                                                               // 8 x 8 result tiles of {16, 128}
+kh.mark_local_segmented(a_stage);
+auto b_work  = kh.slice_work(work, {0, 0}, {8, 8}, {1, 1}, {16}, run);
+auto b_stage = kh.map_work(b_work, [=](auto unit) {
+  auto t      = unit.tile();
+  auto u      = unit.id();
+  auto b_band = b_bands[{0, t[1]}];
+  auto b_col  = sg::slice(b_band, {0, u[0]}, {128, 1});
+  auto b_run  = sg::flatten(b_col);
+  return unit.run(b_run, pass_items);
+});                                                               // 8 x 8 result tiles of {16, 128}
+kh.mark_local_segmented(b_stage);
+auto C_tiles = kh.map_work(work, [=](auto unit) {
+  auto t     = unit.tile();
+  auto u     = unit.id();
+  auto my_a  = a_stage[t];
+  auto my_b  = b_stage[t];
+  auto a_row = sg::slice(my_a, {u[0], 0}, {1, 128});
+  auto b_row = sg::slice(my_b, {u[1], 0}, {1, 128});
+  auto a_run = sg::flatten(a_row);
+  auto b_run = sg::flatten(b_row);
+  return unit.run(a_run, b_run, dot_items);
+});                                                               // 8 x 8 result tiles of {16, 16}
+auto C_elems = kh.join(C_tiles);
+C_out = kh.evaluate(C_elems);
+```
+
+Work-groups: 2048 groups of {16, 16, 4} = 1024; the stages use 64 work-items of each segment. Item p of a product run and item p of a stage run fall in the same segment (p / 4), so the segmented stages are pulled within their segment (W12). The reduce in dot_items is joined across 32 segments: the last segment waits on the others' partials (global, W12).
+Placement: A, B global inputs; a_stage, b_stage segmented local (W12, P24); per-segment partials global; C result memory.
+Trace: C[3][5]: work tile (0, 0), unit (3, 5); a_stage row 3 is A row 3 (all 3s), b_stage row 5 is B column 5 (all 5s); 32 segment partials of 4 x 15 = 60 each, joined 1920. C[127][127] = 2064512.
 
 ## K7 Histogram, 4096 values, 16 bins
 
@@ -453,17 +497,23 @@ auto sums_elems = kh.join(sums);                                  // 64 elements
 y_out = kh.evaluate(sums_elems);
 ```
 
-At cap 256, the same lines up to sums, then:
+At cap 256, built segmented; the body is unchanged:
 
 ```cpp
-auto pieces      = kh.split_runs(sums, 4);                        // 64 x 4 result tiles of {1}, runs of 256
-auto pieces_rows = kh.retile(pieces, {4});                        // 64 tiles of 4: a row's 4 partials
-auto work_join   = kh.work_tiles({64}, {1}, 4);                   // 64 more groups, a later set
-auto row_sums    = sum_tiles(kh, work_join, pieces_rows);         // 64 result tiles of {1}
-auto row_elems   = kh.join(row_sums);                             // 64 elements
-y_out = kh.evaluate(row_elems);
+auto x    = kh.source(x_in);                                      // 64 x 1024
+auto rows = kh.tile(x, {1, 1024});                                // 64 x 1 tiles
+auto run  = sg::segment_items(4, 256);                            // 1024 items in 4 segments of 256
+auto work = kh.work_tiles({64}, {1}, run);                        // 64 tiles x 4 segments = 256 groups of 1 x 256
+auto sums = kh.map_work(work, [=](auto unit) {
+  auto t   = unit.tile();
+  auto row = rows[{t[0], 0}];
+  auto r   = sg::flatten(row);
+  return unit.run(r, sum_items);
+});                                                               // 64 result tiles of {1}
+auto sums_elems = kh.join(sums);
+y_out = kh.evaluate(sums_elems);
 ```
 
-Work-groups: cap 1024: 64 groups of {1, 1024}. Cap 256: 256 groups of {1, 256} for the pieces and 64 of {1, 4} for the join, group size 256 (W8); the join pulls an earlier set (W11). The rows tiling is unchanged.
-Placement: x global input; sums (cap 1024) value then result memory; pieces global (pulled by work_join, W2).
-Trace: y[0] = 523776; y[63] = 63 x 1024 + 523776 = 588288. Cap 256, row 0: pieces 32640, 98176, 163712, 229248, sum 523776.
+Work-groups: cap 1024: 64 groups of {1, 1024}. Cap 256: 64 work tiles x 4 segments = 256 groups of {1, 256}; the reduce is joined across each tile's 4 segments (the last segment waits on the others, global). The rows tiling and the body are unchanged.
+Placement: x global input; each segment's partial global (crosses segments, D10); sums result memory.
+Trace: y[0] = 523776; y[63] = 63 x 1024 + 523776 = 588288. Cap 256, row 0: segment partials 32640, 98176, 163712, 229248, joined 523776.
