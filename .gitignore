@@ -59,3 +59,4 @@ build*/
 # a module still creates one)
 __pycache__/
 *.pyc
+/.ck
