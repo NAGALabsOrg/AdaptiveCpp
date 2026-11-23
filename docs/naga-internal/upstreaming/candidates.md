@@ -1,43 +1,44 @@
 # Upstreaming triage: candidates
 
-Pins: U `27ed6400e890cf0ecd2aa0b055d75cc08ac68dfc`, N `0e2bac974c40554f62286cbffe1f06c87cc9caa9`, B `9ec394efa584ced004d644af2194d2133e111d26`; merge tree M `350667e47d62407ad9bef5977bdab5a632ae8e87` (see baseline.md). Status: first run, before Review 1. Every candidate, boundary, kind and flag below is a proposal; open questions are the unresolved items U01-U12 in decisions.md.
+Pins: U `27ed6400e890cf0ecd2aa0b055d75cc08ac68dfc`, N `0e2bac974c40554f62286cbffe1f06c87cc9caa9`, B `9ec394efa584ced004d644af2194d2133e111d26`; merge tree M `350667e47d62407ad9bef5977bdab5a632ae8e87` (see baseline.md). Status: Review 1 applied (decisions.md, 2026-11-23); conversation flags, horizons and next steps are drafted for Review 2 and are proposals until Jack decides there.
 
 How to read the records:
 - A candidate owns paths and hunks of the difference set (baseline.md). Hunk coordinates are new-file `start,count` of `git diff --no-renames -U0 U M -- <path>`. In an assignment block, `paths` are whole paths (`dir/**` = every difference-set path under `dir`), `hunks` are explicit hunks of a split path, and `rest` marks the candidate that owns every hunk of that path not listed elsewhere. A path appears either whole or split, never both.
-- Assignment basis: each hunk of a modified path went to the working theme of the N-only commits that last touched its lines (`git blame` on a scratch commit whose tree is M, parents U and N); deletion-only hunks by pickaxe on the deleted lines (45 hunks), or by adjacency to the neighbouring hunk (16 hunks, listed in decisions.md U01). Added paths went by the themes of the commits that touched them.
-- Size is the diff of the owned paths and hunks, `git diff --numstat U M`: files, lines added / removed. A split path counts as a file of each owner.
+- A hunk that serves two dispositions is split by line: `@start,count:<new lines>^<old lines>` where the new lines are the 1-based indexes among the hunk's added lines, the old lines (after `^`) are the indexes among its removed lines, and `*` means all. The pieces of a hunk partition its lines. A piece applied alone puts its added lines before the removed lines it does not own.
+- Assignment basis: each hunk of a modified path went to the working theme of the N-only commits that last touched its lines (`git blame` on a scratch commit whose tree is M, parents U and N); deletion-only hunks by pickaxe, or by adjacency to the neighbouring hunk (Review 1 U01: accepted). Review 1 then amended the boundaries (decisions.md).
+- Size is the diff of the owned paths and hunks (files, lines added / removed). A split path counts as a file of each owner.
 - Kinds are the plan's six; `other` carries a subtype. "secondary" lists other kinds present in the change.
-- `requires` edges carry one line of evidence as `M:<path>:<line>` (the line in the tree M) or a command. `pending` names an upstream-pending state. `seam` names changes this candidate relies on that are in a keep-in-fork decision or in an unresolved hunk.
-- `applicability` is the trial merge of the candidate and its prerequisites onto U (method in the section at the end).
-- `open upstream PRs by path` lists open PRs (baseline.md) whose files include a path the candidate owns; it is path-level and is input for the conversation criteria, not a dependency.
-- Conversation flag, horizon and next step are decided after Review 1 (units C1, O1, N1) and are not set here.
+- `requires` edges carry one line of evidence as `M:<path>:<line> <token>`: the line in the tree M must contain the token. `pending` names an upstream-pending state. `seam` names changes this candidate relies on that are in a keep-in-fork decision.
+- `applicability` is the trial merge of the candidate and its prerequisites onto U (method at the end).
+- `open upstream PRs by path` lists open PRs (baseline.md) whose files include a path the candidate owns; it is path-level input, not a dependency.
+- Conversation flags (C1): a candidate is flagged when at least one of five criteria fires, and the fields `flag inputs`, `conversation`, `question`, `venue` and `offer` record it: (a) kind is build-system rework or pixi workspace; (b) it adds a feature, option or extension, or changes a default (`adds`); (c) it is flagged large; (d) its disposition was contested (`contested`); (e) unmerged upstream work overlaps it (`overlap`). Criterion (e) is applied to open PRs whose intent or content overlaps the candidate's, as read in their descriptions or diffs, and to PRs the candidate depends on; a bare path overlap does not fire it, and those PRs are listed under `open upstream PRs by path` only.
+- Horizon (O1) is one of: now, after conversation, after next release. Next step (N1) is `type | owner | done-condition`, with the type one of: open conversation, prepare PR, seam rework, wait.
 
 ## Candidate index
 
-| id | title | kind | files | lines + / - | large |
+| id | title | kind | large | conversation | horizon |
 |---|---|---|---|---|---|
-| C01 | Relocatable toolchain configuration | build-system rework | 173 | +6630 / -1206 | yes |
-| C02 | async_host and deferred issue of operations with foreign requirements | other: feature | 29 | +1251 / -54 | yes |
-| C03 | Support LLVM 22 and 23 | LLVM-version support | 23 | +224 / -58 | no |
-| C04 | Linked-into-LLVM build fixes | build-system rework | 4 | +121 / -2 | no |
-| C05 | Dynamic functions across translation units and object formats | other: feature | 17 | +966 / -37 | no |
-| C06 | CBS: values carried across barriers and split loops | bug fix | 5 | +409 / -9 | no |
-| C07 | SSCP group reduce and scan correctness | bug fix | 6 | +326 / -86 | no |
-| C08 | Keep alloca alignment and size in address-space and aggregate passes | bug fix | 3 | +20 / -3 | no |
-| C09 | Include what you use for Xcode 26 libc++ | bug fix | 53 | +106 / -3 | no |
-| C10 | small_vector as std::vector under libc++ | bug fix | 1 | +15 / -0 | no |
-| C11 | pcuda robustness and MSVC kernel names | bug fix | 4 | +85 / -34 | no |
-| C12 | OpenCL: SPIR-V built for the device's OpenCL C version | bug fix | 2 | +81 / -0 | no |
-| C13 | OpenCL: failed USM prefetch is an ignored hint | bug fix | 1 | +16 / -4 | no |
-| C14 | stdpar: float and pointer atomics through integer builtins | bug fix | 1 | +31 / -17 | no |
-| C15 | SSCP: propagate convergent before pre-inline simplification | bug fix | 2 | +139 / -0 | no |
-| C16 | Kernel cache: build code objects outside the cache lock | performance | 1 | +84 / -50 | no |
-| C17 | JIT tool invocations: exit-code messages and Windows error dialogs | bug fix | 7 | +28 / -15 | no |
-| C18 | Level Zero: include `<cstdint>` instead of a glibc-internal header | bug fix | 1 | +1 / -1 | no |
-| C19 | Threads as a usage requirement and in package configs | build-system rework | 4 | +20 / -3 | no |
-| C20 | pixi workspace and packages | pixi workspace | 50 | +7553 / -0 | yes |
+| C01 | Relocatable toolchain configuration | build-system rework | yes | yes | after conversation |
+| C02 | async_host and deferred issue of operations with foreign requirements | other: feature | yes | yes | after conversation |
+| C03 | LLVM 23 support | LLVM-version support | no | yes | after conversation |
+| C04 | Linked-into-LLVM build fixes | build-system rework | no | yes | after conversation |
+| C05 | Dynamic functions across translation units and object formats | other: feature | no | yes | after conversation |
+| C06 | CBS: values carried across barriers and split loops | bug fix | no | yes | after conversation |
+| C07 | SSCP group scans and sub-group ids in work-group reduce | bug fix | no | yes | after conversation |
+| C08 | Keep alloca alignment and size in address-space and aggregate passes | bug fix | no | no | now |
+| C09 | Include what you use for Xcode 26 libc++ | bug fix | no | no | now |
+| C11 | pcuda robustness and MSVC kernel names | bug fix | no | no | now |
+| C12 | OpenCL: SPIR-V built for the device's OpenCL C version | bug fix | no | no | now |
+| C13 | OpenCL: failed USM prefetch is an ignored hint | bug fix | no | no | now |
+| C14 | stdpar: float and pointer atomics through integer builtins | bug fix | no | no | now |
+| C15 | SSCP: propagate convergent before pre-inline simplification | bug fix | no | yes | after conversation |
+| C16 | Kernel cache: build code objects outside the cache lock | performance | no | no | now |
+| C17 | JIT tool invocations: exit-code messages and Windows error dialogs | bug fix | no | no | now |
+| C18 | Level Zero: include `<cstdint>` instead of a glibc-internal header | bug fix | no | no | now |
+| C19 | Link dependencies: Threads and the dynamic loader library | bug fix | no | no | now |
+| C20 | pixi workspace and packages | pixi workspace | yes | yes | after conversation |
 
-Totals check: file counts add up to 387 for the candidates plus 20 for keep-in-fork = 407 entries, because the 30 split paths count once per owner (340 whole paths + 67 owner entries of split paths); lines add up with the keep-in-fork decisions (keep-in-fork.md: +2007 / -0) to the difference set's +20113 / -1582.
+C10 (small_vector under libc++) became keep-in-fork KF5 at Review 1; its id is retired. Counts: 19 candidates (9 flagged for a conversation, 10 not), plus the keep-in-fork decisions in keep-in-fork.md.
 
 ## C01 Relocatable toolchain configuration
 
@@ -45,14 +46,21 @@ Totals check: file counts add up to 387 for the candidates plus 20 for keep-in-f
 - intent: Replace baked-in build-machine paths with a layered options, discovery and installed-configuration model (GNUInstallDirs install layout, `$ORIGIN` rpaths, an installed toolchain, application and deploy configuration read by the `acpp` driver and the runtime, run-time resolution of the LLVM tools and of the host JIT's vector math library), so that an installed AdaptiveCpp can be relocated and its vendor libraries bundled or deployed.
 - kind: build-system rework
 - secondary: other: documentation (doc/ edits for the model), other: refactor (removal of the legacy per-vendor finds and flat option emitter)
-- size: files 173, lines +6630 / -1206
-- large: yes. Proposed split (not decided), each part also a coherent intent: (a) options, discovery and configuration merge (`cmake/options/**`, `cmake/discovery/**`, `cmake/discovery.cmake`, `cmake/acpp-config-merge.cmake`, `config/**`, root `CMakeLists.txt` wiring); (b) install layout, vendor install rules and rpaths (`cmake/install/**`, `cmake/acpp-vendor-*.cmake`, `cmake/acpp-installed-configs.cmake`, install/rpath hunks of the `src/**/CMakeLists.txt` files and `src/tools/**`); (c) driver configuration and deploy (`bin/acpp`, `doc/` edits); (d) run-time settings and tool resolution (`include/hipSYCL/common/settings.hpp`, `src/common/**`, `src/runtime/backend_loader.cpp`, `Utils.cpp` and the `llvm-to-*` tool-path hunks, `LLVMToHost` vector math). Platform axes (Windows, macOS, Android) and vendor units (HIP SDK, NVHPC, Vulkan, clspv) are spread through (a)-(d).
+- size: files 173, lines +6591 / -1205
+- large: yes (kept at Review 1, U12). Proposed split, to be decided in the conversations: (a) options, discovery and configuration merge (`cmake/options/**`, `cmake/discovery/**`, `cmake/discovery.cmake`, `cmake/acpp-config-merge.cmake`, `config/**`, root `CMakeLists.txt` wiring); (b) install layout, vendor install rules and rpaths (`cmake/install/**`, `cmake/acpp-vendor-*.cmake`, `cmake/acpp-installed-configs.cmake`, install/rpath hunks of the `src/**/CMakeLists.txt` files and `src/tools/**`); (c) driver configuration and deploy (`bin/acpp`, `doc/` edits); (d) run-time settings and tool resolution (`include/hipSYCL/common/settings.hpp`, `src/common/**`, `src/runtime/backend_loader.cpp`, `Utils.cpp` and the `llvm-to-*` tool-path hunks, `LLVMToHost` vector math). Platform axes (Windows, macOS, Android) and vendor units (HIP SDK, NVHPC, Vulkan, clspv) are spread through (a)-(d); whether the parts stand alone has not been checked.
 - merged cycle: the host JIT vector-math change (default `libmvec`, loader lookup, `jit_host_*` run-time settings; working theme `vector-math`) and this candidate depend on each other, so they are one candidate. Evidence: `M:CMakeLists.txt:542` sets `DEFAULT_VEC_MATH_LIB`, consumed at `M:cmake/options/linux/common/core.cmake:129` (`set(ACPP_VECTOR_MATH_LIB "${DEFAULT_VEC_MATH_LIB}")`); the JIT consumes the installed key written from `M:config/common/core.json:90` (`"@ACPP_VECTOR_MATH_LIB@"`) via `M:src/compiler/llvm-to-backend/host/LLVMToHost.cpp:320` (`try_retrieve_settings_variable`).
 - requires: none
-- pending: maintainer decision on the configuration model itself: it replaces upstream's install-prefix and rpath handling, on which open upstream PRs #2283, #2268, #2160, #2131 and #1670 (draft) also work (baseline.md, overlapping PRs). Needs a maintainer answer before the PR; no unmerged upstream change is needed in U.
-- seams: C01 owns two unresolved hunks that carry a fork-identity line: `M:src/compiler/llvm-to-backend/CMakeLists.txt:272` is `GIT_REPOSITORY https://github.com/NAGALabsOrg/SPIRV-LLVM-Translator` (U has `AdaptiveCpp/SPIRV-LLVM-Translator`, `U:src/compiler/llvm-to-backend/CMakeLists.txt:207`), in hunk `@268,7`; `@244,15` defines `LLVMSPIRV_GIT_TAG`/`LLVMSPIRV_GIT_SHALLOW` (`M:...CMakeLists.txt:250-254`). Resolution: rework needed on this candidate (restore the upstream repository URL before offering), unless Jack moves the fork-URL lines to keep-in-fork at Review 1 (unresolved U03).
-- applicability: conflicting files: `CMakeLists.txt`, `include/hipSYCL/common/settings.hpp`, `src/compiler/llvm-to-backend/CMakeLists.txt`. Their conflict hunks overlap upstream commits 16b96a8a/bea19449 (Windows manifest and CRT), 92f1911d (settings whitespace parsing), bce257b0/f4ff3681/d795f824 (see baseline.md).
+- pending: maintainer decision on the configuration model itself: it replaces upstream's install-prefix and rpath handling, on which open upstream PRs #2283, #2268, #2160, #2131 and #1670 (draft) also work. Needs a maintainer answer before the PR; no unmerged upstream change is needed in U.
+- seams: none. The fork-identity line in `src/compiler/llvm-to-backend/CMakeLists.txt` (hunk `@268,7`, the `NAGALabsOrg` translator URL) was split out at Review 1 (U03) into KF4; the upstream URL stays in this candidate's version of that hunk.
+- applicability: conflicting files: `CMakeLists.txt`, `include/hipSYCL/common/settings.hpp`, `src/compiler/llvm-to-backend/CMakeLists.txt`. The conflicts overlap upstream commits 16b96a8a/bea19449 (Windows manifest and CRT), 92f1911d (settings whitespace parsing), bce257b0/f4ff3681/d795f824 (see baseline.md).
 - open upstream PRs by path: #2304 #2297 #2293 #2283 #2268 #2259 #2170 #2166 #2160 #2131 #2108 #2038 #1986 #1948 #1946 #1943 #1937 #1884 #1796 #1778 #1777 #1670 #1562 #1533 #1362 #1342 #1095 #1094 #807
+- flag inputs: adds=option,default; contested=no; overlap=#2283,#2268,#2160,#2131,#1670 (install prefix and rpath work; judged by title, bodies not read)
+- conversation: yes (criteria a,b,c,e)
+- question: Do the maintainers want installs to be relocatable through an options, discovery and installed-configuration model that replaces build-machine paths (GNUInstallDirs layout, `$ORIGIN` rpaths, an installed toolchain and application config read by `acpp` and the runtime, run-time libmvec lookup, new `ACPP_<VENDOR>_ROOT` options and a changed vector-math default)? How should it be split, and how does it relate to #2283, #2268, #2160, #2131 and #1670?
+- venue: new issue (CONTRIBUTING.md line 3: open an issue when in doubt about design)
+- offer: the whole candidate on U, in the parts agreed in the issue
+- horizon: after conversation
+- next step: open conversation | owner: Jack | done: the issue is open with the recorded question and the maintainers' answer is recorded in decisions.md
 
 ```assignment C01
 paths
@@ -83,6 +91,8 @@ paths
 hunks
   doc/install-llvm.md @94,1
   src/compiler/CMakeLists.txt @19,3 @27,1 @229,3
+  src/compiler/llvm-to-backend/CMakeLists.txt @200,21:6-21 @268,7:1-4,6-7^2-3
+  src/compiler/llvm-to-backend/Utils.cpp @23,12:9-12 @53,58:25-30,32-58^*
   src/compiler/llvm-to-backend/spirv/LLVMToSpirv.cpp @20,1 @354,9 @364,8
   src/runtime/CMakeLists.txt @117,3 @136,3 @157,9 @187,4 @209,9 @229,3 @250,7 @272,3 @277,3 @296,8 @358,7 @521,0 @549,8 @607,3
 rest
@@ -107,12 +117,19 @@ rest
 - kind: other: feature
 - secondary: bug fix (deadlocks fixed along the way: `1b335c2a`, `263b06d4`), other: documentation (doc/extensions.md, doc/runtime-spec.md), other: test
 - size: files 29, lines +1251 / -54
-- large: yes (Research Lead's proposal). Proposed split: (a) deferral on foreign requirements (`include/hipSYCL/runtime/{cuda,hip}/**`, `src/runtime/{cuda,hip}/**`, `inorder_executor`, `inorder_queue.hpp`, `operations.hpp`, `event.hpp`, `doc/runtime-spec.md`); (b) the `async_host` extension (`async_host_executor.*`, `sycl/{queue,handler,extensions}.hpp`, `doc/extensions.md`, tests); (c) the retarget context (`hints.hpp`, `usm_query.hpp`, handler/queue retarget hunks).
+- large: yes (kept at Review 1, U12). Proposed split, to be decided in the conversations: (a) deferral on foreign requirements (`include/hipSYCL/runtime/{cuda,hip}/**`, `src/runtime/{cuda,hip}/**`, `inorder_executor`, `inorder_queue.hpp`, `operations.hpp`, `event.hpp`, `doc/runtime-spec.md`); (b) the `async_host` extension (`async_host_executor.*`, `sycl/{queue,handler,extensions}.hpp`, `doc/extensions.md`, tests); (c) the retarget context (`hints.hpp`, `usm_query.hpp`, handler/queue retarget hunks).
 - requires: none
 - pending: none. Open upstream PRs by path overlap (below) but none is needed.
 - seams: none
 - applicability: clean
 - open upstream PRs by path: #2289 #2283 #2232 #2200 #1948 #1946 #1916 #1778 #1670 #1478 #1095 #912 #618
+- flag inputs: adds=feature; contested=no; overlap=none (path-only overlap with #2289, #2232, #2200, #1946, #1916 and others; their descriptions do not share this intent for #2200 and #1478, the rest not read)
+- conversation: yes (criteria b,c)
+- question: Is an `async_host` queue and handler extension, with deferred issue of operations whose requirements belong to other queues or host tasks (host-function deferral on CUDA and HIP, waits on in-order queues, a retarget context), wanted in AdaptiveCpp, and how should it be split?
+- venue: new issue
+- offer: the candidate with its documentation (doc/extensions.md, doc/runtime-spec.md) and tests, in the parts agreed in the issue
+- horizon: after conversation
+- next step: open conversation | owner: Jack | done: the issue is open with the recorded question and the maintainers' answer is recorded in decisions.md
 
 ```assignment C02
 paths
@@ -145,24 +162,29 @@ rest
   tests/sycl/extensions.cpp
 ```
 
-## C03 Support LLVM 22 and 23
+## C03 LLVM 23 support
 
-- title: Support LLVM 22 and 23
-- intent: Build and run AdaptiveCpp against LLVM 22 and LLVM 23: version-gate bump, LLVM API changes in the compiler passes and backends (`LLVMUtils.hpp` compatibility helpers, `createBr`, `getFirstNonPHI` and related), SPIR-V `SPV_INTEL_fast_composite` handling, CI matrix entry for clang 22, installation documentation.
+- title: LLVM 23 support: compatibility helpers, compiler ports and the version gate
+- intent: Build AdaptiveCpp against LLVM 23: the version gate accepts 23, the compiler passes and backends use compatibility helpers (`LLVMUtils.hpp`: `getPointerTo`, `getFirstNonPHI`, `moveBefore`, `insertBefore`, `getBranchCondition`, `createBr`, `createCondBr`, `clearModuleInlineAsm`) for the LLVM API changes (split branch instructions, `splitBlockBefore`, iterator insertion points, module inline asm), the SPIR-V extension list drops `SPV_INTEL_fast_composite` on 23, and the installation table names 23.
 - kind: LLVM-version support
 - secondary: none
-- size: files 23, lines +224 / -58
+- size: files 14, lines +177 / -42
 - large: no
 - requires: none
-- pending: two. (1) Maintainer decision on LLVM 23: U's gate refuses development versions (`U:CMakeLists.txt:481` "LLVM versions greater than 21 are not yet tested/supported" and `:486` "This LLVM seems to be a development version; only LLVM releases are tested and supported"), and this candidate raises the supported maximum to 23 (`M:CMakeLists.txt:490`), where the fork builds against an AMD snapshot (`packages/core/pins.toml`, commit 0bace190). (2) Open upstream PR #1986 "Support LLVM 22" (al42and, updated 2026-11-19) changes 12 of the same paths; whichever lands second must rebase.
-- seams: none
+- pending: open upstream PR #1986 "Support LLVM 22" (al42and, updated 2026-11-19). Its LLVM 22 changes (plugin header move, `--enable-unsafe-fp-math` guards, lifetime-intrinsic arguments, data layouts, CI entry, install documentation) are the same as the fork's hunks held in KF6, and the LLVM 23 build needs them; they arrive in U if #1986 lands. The maintainer decision on LLVM 23 as a development version (`U:CMakeLists.txt:481` and `:486`) is asked in C20's conversation (Review 1, U08).
+- seams: KF6 (see the seams block); resolution: the pending edge on #1986 (Review 1, U08), revisit trigger "#1986 merges".
 - applicability: clean
-- open upstream PRs by path: #2307 #2305 #2304 #2297 #2291 #2284 #2242 #2211 #2170 #2166 #2108 #2038 #1986 #1946 #1943 #1937 #1884 #1796 #1778 #1777 #1670 #1533 #1234 #1095 #1094 #807
+- open upstream PRs by path: #2307 #2305 #2297 #2291 #2284 #2166 #2108 #2038 #1986 #1946 #1884 #1778 #1777 #1670 #1533 #1095 #1094 #807
+- flag inputs: adds=none; contested=no; overlap=#1986 (same intent: LLVM 22 changes this candidate builds on; read)
+- conversation: yes (criteria e)
+- question: Does upstream want LLVM 23 accepted in the version gate once #1986 has landed, given the rule that development versions are not supported (`CMakeLists.txt:481`, `:486`)? Asked together with C20's question.
+- venue: C20's conversation (existing discussion #1981), joined; comment on PR #1986 once it has merged
+- offer: the LLVM 23 helpers and ports on top of U with #1986
+- horizon: after conversation
+- next step: wait | owner: Research Lead | done: C20's conversation (opened first) has the maintainers' answer on LLVM 23 and PR #1986 has merged
 
 ```assignment C03
 paths
-  .github/**
-  src/compiler/llvm-to-backend/metal/**
   include/hipSYCL/compiler/utils/LLVMUtils.hpp
   src/compiler/cbs/IRUtils.cpp
   src/compiler/cbs/PHIsToAllocas.cpp
@@ -170,20 +192,14 @@ paths
   src/compiler/cbs/UniformityAnalysis.cpp
   src/compiler/cbs/VectorShapeTransformer.cpp
   src/compiler/llvm-to-backend/host/HostKernelWrapperPass.cpp
-  src/compiler/sscp/HcfRegistrationPass.cpp
   src/compiler/sscp/TargetSeparationPass.cpp
 hunks
   CMakeLists.txt @490,2
   doc/installing.md @55,3 @59,2
-  src/compiler/AdaptiveCppLlvmPasses.cpp @42,1 @44,3
-  src/compiler/llvm-to-backend/AddressSpaceInferencePass.cpp @160,4
-  src/compiler/llvm-to-backend/amdgpu/LLVMToAmdgpu.cpp @207,5
-  src/compiler/llvm-to-backend/host/LLVMToHost.cpp @34,1 @351,1 @353,1
-  src/compiler/llvm-to-backend/ptx/LLVMToPtx.cpp @95,4 @241,1 @243,1
+  src/compiler/sscp/HcfRegistrationPass.cpp @12,2 @98,2
   src/compiler/llvm-to-backend/spirv/LLVMToSpirv.cpp @57,9 @78,1
   src/compiler/sscp/pcuda/FreeKernelCall.cpp @12,2 @190,1 @199,1 @270,1
 rest
-  doc/install-llvm.md
   src/compiler/cbs/SubCfgFormation.cpp
 ```
 
@@ -197,9 +213,16 @@ rest
 - large: no
 - requires: none. Checked: every `ACPP_*` and `LLVM_*` name used in the libomp hunk (`M:src/runtime/CMakeLists.txt:376-458`) is defined in U (`ACPP_LLVM_COMPONENT`, `U:CMakeLists.txt:81-84`) or in the hunk itself (`ACPP_BUILDTREE_LIBOMP_DIR`, `M:src/runtime/CMakeLists.txt:411`); `LLVM_ADAPTIVECPP_LINK_INTO_TOOLS` exists at U (`U:CMakeLists.txt:82-89`).
 - pending: none
-- seams: none. Disposition is contested (unresolved U09): the use case is the fork's own build pipeline.
+- seams: none. Disposition contested (Review 1, U09): kept as a candidate.
 - applicability: clean
 - open upstream PRs by path: #2283 #2268 #2170 #2166 #2160 #2131 #2038 #1986 #1948 #1946 #1778 #1670 #1095 #1094
+- flag inputs: adds=none; contested=yes; overlap=none
+- conversation: yes (criteria a,d)
+- question: Is building AdaptiveCpp linked into the LLVM tools (`LLVM_ADAPTIVECPP_LINK_INTO_TOOLS`, openmp as an LLVM runtime, a Windows LLVM DLL) a configuration upstream supports, so that these fixes belong upstream?
+- venue: draft PR as the venue itself
+- offer: the candidate as a draft PR on U
+- horizon: after conversation
+- next step: open conversation | owner: Jack | done: the draft PR is open with the recorded question and the maintainers' answer is recorded in decisions.md
 
 ```assignment C04
 hunks
@@ -223,6 +246,13 @@ rest
 - seams: none
 - applicability: clean
 - open upstream PRs by path: #2307 #2297 #2289 #2166 #1884 #1478
+- flag inputs: adds=feature; contested=no; overlap=none (path-only overlap with #2307, #2297, #2289, #2166, #1884, #1478; not read)
+- conversation: yes (criteria b)
+- question: Is extending the dynamic-function extension (definitions in other translation units, indexed call sequences, host stand-ins for ELF, Mach-O and COFF) wanted, and does the extension's interface change need design discussion first?
+- venue: new issue
+- offer: the candidate with its lit tests and doc/extensions.md text
+- horizon: after conversation
+- next step: open conversation | owner: Jack | done: the issue is open with the recorded question and the maintainers' answer is recorded in decisions.md
 
 ```assignment C05
 paths
@@ -253,10 +283,17 @@ rest
 - size: files 5, lines +409 / -9
 - large: no
 - requires: none
-- pending: none. Commit `0e2bac97` fixes upstream issue #2264 (open at lookup); the earlier `681c6c5e` is already in U and is not part of this candidate. Open upstream PRs #2305, #2297, #2291 and #2284 change `SubCfgFormation.cpp` too (path overlap).
+- pending: none. Commit `0e2bac97` fixes upstream issue #2264 (open at lookup); the earlier `681c6c5e` is already in U and is not part of this candidate.
 - seams: none
 - applicability: clean
 - open upstream PRs by path: #2305 #2297 #2291 #2284
+- flag inputs: adds=none; contested=no; overlap=#2305 (appears to fix the same lookup-order bug in `fixSingleSubCfgValues` that hunk `@1140,6` fixes; PR body read, diff not compared line by line)
+- conversation: yes (criteria e)
+- question: PR #2305 appears to fix the same bug in `fixSingleSubCfgValues` (the alloca found in `RemappedInstAllocaMap` being overwritten by `getLoopStateAllocaForLoad`). Our change also stops recomputing side-effecting and memory-reading values after a barrier and restores split-loop live values, with four lit tests (issue #2264). Should ours go on top of #2305 once it merges, or be folded into it?
+- venue: comment on PR #2305
+- offer: the candidate's hunks and four lit tests, rebased on #2305
+- horizon: after conversation
+- next step: open conversation | owner: Jack | done: the comment is posted on #2305 and the answer is recorded in decisions.md
 
 ```assignment C06
 paths
@@ -265,24 +302,34 @@ hunks
   src/compiler/cbs/SubCfgFormation.cpp @662,4 @679,3 @704,2 @1140,6 @1148,6
 ```
 
-## C07 SSCP group reduce and scan correctness
+## C07 SSCP group scans and sub-group ids in work-group reduce
 
-- title: SSCP group reduce and scan: known identities, wg_reduce broadcast type, race-free scans, sub-group id and count
-- intent: Correct SSCP group reductions and scans: min/max identities match `sycl::known_identity`, `wg_reduce` broadcasts the result as its own type instead of integer bits through float memory, inclusive-first scans are race-free, and the backend's sub-group id and count are used; with tests for fractional and negative float min/max.
+- title: SSCP group scans and work-group reduce: race-free scans, sub-group id and count from the backend, with tests
+- intent: Make SSCP work-group scans race-free (the inclusive scan of each sub-group first, exclusive results shifted and `init` applied once per work-group, every work-item reaching every barrier) and make `wg_reduce` and the scans take the sub-group id and count from the backend instead of deriving them from the maximum sub-group size, with bounded halving in `wg_reduce`; with tests for fractional and negative float min/max reductions and scans.
 - kind: bug fix
 - secondary: other: test
-- size: files 6, lines +326 / -86
+- size: files 5, lines +302 / -82
 - large: no
 - requires: none
-- pending: none. Open upstream PR #2282 "[SSCP] Fix known identity for group algorithms" (sbalint98, updated 2026-11-19) changes `group_functions.hpp` and `group_functions_reduce.cpp`, which this candidate also changes (same intent for the identities); U's commit beee5ba1 (#2301) changed `reduction.hpp`, which conflicts with this candidate.
-- seams: none
-- applicability: conflicting files: `include/hipSYCL/sycl/libkernel/sscp/builtins/detail/reduction.hpp` (upstream beee5ba1 "[SSCP] Fix workgroup reduction precision (#2301)")
+- pending: open upstream PR #2282 "[SSCP] Fix known identity for group algorithms" (sbalint98, approved, updated 2026-11-19). The tests of this candidate expect the identities that #2282 and KF7 provide (`M:tests/sycl/group_functions/group_functions_scan.cpp:1004`). The identity hunks and the `wg_reduce` broadcast comment are held in KF7 (Review 1, C07 amendment).
+- seams: KF7 (see the seams block); resolution: the pending edge on #2282, revisit trigger "#2282 merges".
+- applicability: clean
 - open upstream PRs by path: #2326 #2297 #2282 #966 #778
+- flag inputs: adds=none; contested=no; overlap=#2282 (the tests rely on its identities and rewrite the same test file; read)
+- conversation: yes (criteria e)
+- question: The scan rewrites and the sub-group id and count change in `wg_reduce` are independent of #2282's identities, but our fractional and negative min/max tests rely on them. Should they come as a separate PR after #2282, and do you want the tests added there?
+- venue: comment on PR #2282
+- offer: the scan and `wg_reduce` changes and the tests, as a PR on top of #2282
+- horizon: after conversation
+- next step: open conversation | owner: Jack | done: the comment is posted on #2282 and the answer is recorded in decisions.md
 
 ```assignment C07
 paths
-  include/hipSYCL/sycl/libkernel/**
+  include/hipSYCL/sycl/libkernel/sscp/builtins/detail/scan_generic.hpp
+  include/hipSYCL/sycl/libkernel/sscp/builtins/detail/scan_hiplike.hpp
   tests/sycl/group_functions/**
+rest
+  include/hipSYCL/sycl/libkernel/sscp/builtins/detail/reduction.hpp
 ```
 
 ## C08 Keep alloca alignment and size in address-space and aggregate passes
@@ -298,6 +345,10 @@ paths
 - seams: none
 - applicability: clean
 - open upstream PRs by path: #1986
+- flag inputs: adds=none; contested=no; overlap=none (path-only overlap with #1986)
+- conversation: no
+- horizon: now
+- next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and its textual trial merge is clean
 
 ```assignment C08
 paths
@@ -311,7 +362,7 @@ rest
 
 - title: Add missing standard includes for Xcode 26 libc++ in the runtime and the Metal backend
 - intent: Add the direct includes that code in `include/hipSYCL/runtime`, `src/runtime` and the Metal backend relies on transitively, so the runtime builds with the libc++ of Xcode 26.
-- kind: bug fix (a build failure; see unresolved U11 on the kind)
+- kind: bug fix (a build failure; kind accepted at Review 1, U11)
 - secondary: none
 - size: files 53, lines +106 / -3
 - large: no
@@ -320,6 +371,10 @@ rest
 - seams: none
 - applicability: conflicting files: `include/hipSYCL/runtime/omp/omp_queue.hpp` (upstream b5535e79 "[PCUDA][OpenMP] Fix PCUDA kernel launch not running in worker thread (#2263)" changes the include block)
 - open upstream PRs by path: #2297 #2283 #2200 #1946 #1478 #1095 #618 #505
+- flag inputs: adds=none; contested=no; overlap=none (path-only overlap with #2297, #2283, #2200, #1946, #1478, #1095, #618, #505; #1478 read, a different intent)
+- conversation: no
+- horizon: now
+- next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and the conflict in `omp_queue.hpp` is resolved against b5535e79
 
 ```assignment C09
 paths
@@ -363,25 +418,6 @@ hunks
   src/runtime/serialization/serialization.cpp @20,1
 ```
 
-## C10 small_vector as std::vector under libc++
-
-- title: `small_vector` and `auto_small_vector` are plain `std::vector` under libc++
-- intent: Avoid the double free at runtime teardown on macOS caused by sbo's allocator keeping its small buffer inside the allocator object, by using `std::vector` for both aliases when `_LIBCPP_VERSION` is defined.
-- kind: bug fix
-- secondary: none
-- size: files 1, lines +15 / -0
-- large: no
-- requires: none
-- pending: unclear whether still needed: U's commit 96c7d17a "[small_vector] Work around container implementation of libc++ 22 (#2273)" (2026-11-18) changes `include/hipSYCL/common/sbo/small_vector.hpp` for libc++ 22. Unresolved U05.
-- seams: none
-- applicability: clean
-- open upstream PRs by path: none
-
-```assignment C10
-paths
-  include/hipSYCL/common/small_vector.hpp
-```
-
 ## C11 pcuda robustness and MSVC kernel names
 
 - title: pcuda: null-check backend and allocator lookups, fail cleanly on missing kernel info, launch MSVC-mangled kernels by their sanitised name, 0-based device ids
@@ -395,6 +431,10 @@ paths
 - seams: none
 - applicability: clean
 - open upstream PRs by path: none
+- flag inputs: adds=none; contested=no; overlap=none
+- conversation: no
+- horizon: now
+- next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and its textual trial merge is clean
 
 ```assignment C11
 paths
@@ -417,6 +457,10 @@ rest
 - seams: none
 - applicability: clean
 - open upstream PRs by path: #1884
+- flag inputs: adds=none; contested=no; overlap=none (path-only overlap with #1884; not read)
+- conversation: no
+- horizon: now
+- next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and its textual trial merge is clean
 
 ```assignment C12
 paths
@@ -438,6 +482,10 @@ rest
 - seams: none
 - applicability: clean
 - open upstream PRs by path: #2323 #2270
+- flag inputs: adds=none; contested=no; overlap=none (path-only overlap with #2323 and #2270; both read, different intents)
+- conversation: no
+- horizon: now
+- next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and its textual trial merge is clean
 
 ```assignment C13
 paths
@@ -457,6 +505,10 @@ paths
 - seams: none
 - applicability: clean
 - open upstream PRs by path: none
+- flag inputs: adds=none; contested=no; overlap=none
+- conversation: no
+- horizon: now
+- next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and its textual trial merge is clean
 
 ```assignment C14
 paths
@@ -472,10 +524,17 @@ paths
 - size: files 2, lines +139 / -0
 - large: no
 - requires: none
-- pending: open upstream PR #2307 "[SSCP] Mark wrappers of convergent builtins as convergent before ..." (amavliut, updated 2026-11-11) changes `LLVMToBackend.cpp` and adds `tests/compiler/sscp/preinline_convergent.cpp`, the same file this candidate adds; it may be the same fix. Overlap, not a requirement; to be examined before opening a PR.
+- pending: none. Open PR #2307 (amavliut) makes the same fix; this candidate is an overlap, not a requirement. Compared at the diff level: #2307 marks functions only and also changes stage 1 to `buildO0DefaultPipeline`; this candidate also marks direct call sites and its test puts the barrier behind a user helper (expects one barrier call), where #2307's test calls `item.barrier()` directly (expects two).
 - seams: none
 - applicability: clean
 - open upstream PRs by path: #2307 #2297 #2166 #1884
+- flag inputs: adds=none; contested=no; overlap=#2307 (same intent; diff read)
+- conversation: yes (criteria e)
+- question: Our `propagateConvergence` also marks direct call sites convergent, and our lit test puts the barrier behind a user helper (expects one barrier call), where #2307's test calls `item.barrier()` directly. Do you want the call-site marking and the helper test folded into #2307, or as a follow-up PR?
+- venue: comment on PR #2307
+- offer: the call-site marking and the helper-barrier test
+- horizon: after conversation
+- next step: open conversation | owner: Jack | done: the comment is posted on #2307 and the answer is recorded in decisions.md
 
 ```assignment C15
 paths
@@ -488,8 +547,8 @@ hunks
 
 - title: Kernel cache: build code objects outside the cache lock
 - intent: Compile and load code objects without holding the kernel cache's lock, with futures for concurrent requests for the same object.
-- kind: performance
-- secondary: bug fix (lock held across JIT compilation); see unresolved U11 on the kind
+- kind: performance (kind accepted at Review 1, U11)
+- secondary: bug fix (lock held across JIT compilation)
 - size: files 1, lines +84 / -50
 - large: no
 - requires: none
@@ -497,6 +556,10 @@ hunks
 - seams: none
 - applicability: clean
 - open upstream PRs by path: #2200 #1478
+- flag inputs: adds=none; contested=no; overlap=none (path-only overlap with #2200 (read, a free-function-kernels prototype) and #1478)
+- conversation: no
+- horizon: now
+- next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and its textual trial merge is clean
 
 ```assignment C16
 rest
@@ -509,19 +572,23 @@ rest
 - intent: Make a failing `opt`, `llc`, `lld`, `clang`, `clspv` or `llvm-spirv` invocation report its exit code, and prevent a child that cannot load a DLL from blocking the JIT on a modal Windows error dialog.
 - kind: bug fix
 - secondary: none
-- size: files 7, lines +28 / -15
+- size: files 7, lines +61 / -15
 - large: no
-- requires: C01 (symbol, via an entangled hunk, see unresolved U02). Evidence: `suppressChildErrorDialogs` and `describeToolExitCode` are defined at `M:src/compiler/llvm-to-backend/Utils.cpp:58` and `:73` inside hunk `@53,58`, which is assigned to C01 (it also holds C01's tool resolution); this candidate calls them at `Utils.cpp:266`, `:275`, `LLVMToAmdgpu.cpp:360`, `:549`, `LLVMToCLSPV.cpp:359`, `LLVMToHost.cpp:560`, `:568`, `:576`, `LLVMToPtx.cpp:222`, `:260`, `LLVMToSpirv.cpp:399`; the declaration `M:include/hipSYCL/compiler/llvm-to-backend/Utils.hpp:406` is owned here.
+- requires: none. At Review 1 (U02) the two definitions `suppressChildErrorDialogs` and `describeToolExitCode` were split out of C01's tool-path hunk into this candidate (`M:src/compiler/llvm-to-backend/Utils.cpp:58` and `:73`), so the former edge on C01 is gone.
 - pending: none
 - seams: none
-- applicability (with C01): conflicting files: `CMakeLists.txt`, `include/hipSYCL/common/settings.hpp`, `include/hipSYCL/compiler/llvm-to-backend/Utils.hpp`, `src/compiler/llvm-to-backend/CMakeLists.txt`. `Utils.hpp` is a whole-path of this candidate and carries the conflict with upstream bce257b0 (`ACPP_DEFAULT_VISIBILITY` on the declarations).
+- applicability: conflicting files: `include/hipSYCL/compiler/llvm-to-backend/Utils.hpp` (a whole path of this candidate; upstream bce257b0 adds `ACPP_DEFAULT_VISIBILITY` to the declarations)
 - open upstream PRs by path: #2304 #2297 #2170 #1986 #1943 #1937 #1884 #1796 #1478
+- flag inputs: adds=none; contested=no; overlap=none (path-only overlap with #2304, #2297, #2170, #1986, #1943, #1937, #1884, #1796, #1478; not read)
+- conversation: no
+- horizon: now
+- next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and the conflict in `Utils.hpp` is resolved against bce257b0
 
 ```assignment C17
 paths
   include/hipSYCL/compiler/llvm-to-backend/Utils.hpp
 hunks
-  src/compiler/llvm-to-backend/Utils.cpp @19,2 @266,1 @275,1
+  src/compiler/llvm-to-backend/Utils.cpp @19,2 @23,12:1-8 @53,58:1-24,31 @266,1 @275,1
   src/compiler/llvm-to-backend/amdgpu/LLVMToAmdgpu.cpp @360,1 @549,1
   src/compiler/llvm-to-backend/clspv/LLVMToCLSPV.cpp @359,1
   src/compiler/llvm-to-backend/host/LLVMToHost.cpp @560,1 @568,1 @576,1
@@ -542,47 +609,63 @@ hunks
 - seams: none
 - applicability: clean
 - open upstream PRs by path: none
+- flag inputs: adds=none; contested=no; overlap=none
+- conversation: no
+- horizon: now
+- next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and its textual trial merge is clean
 
 ```assignment C18
 paths
   src/runtime/ze/**
 ```
 
-## C19 Threads as a usage requirement and in package configs
+## C19 Link dependencies: Threads and the dynamic loader library
 
-- title: Declare Threads as a public usage requirement of `acpp-rt` and as a dependency of the installed package configs
-- intent: Link `Threads::Threads` publicly from `acpp-rt` (and name it explicitly for `rt-backend-omp`), and call `find_dependency(Threads)` in the installed `adaptivecpp`, `hipsycl` and `opensycl` package configs, so consumers get the imported target.
-- kind: build-system rework
-- secondary: bug fix (consumers of the installed config lacked `Threads::Threads`); see unresolved U11
-- size: files 4, lines +20 / -3
+- title: Declare Threads as a public usage requirement of `acpp-rt` and in the package configs, and link the dynamic loader library into `llvm-to-backend`
+- intent: Link `Threads::Threads` publicly from `acpp-rt` (and name it explicitly for `rt-backend-omp`), call `find_dependency(Threads)` in the installed `adaptivecpp`, `hipsycl` and `opensycl` package configs so consumers get the imported target, and link `${CMAKE_DL_LIBS}` into `llvm-to-backend` for glibc before 2.34.
+- kind: bug fix (changed from build-system rework at Review 1, U11)
+- secondary: none
+- size: files 5, lines +25 / -3
 - large: no
-- requires: none. Checked and ruled out: C02's `async_host_executor.cpp` uses `std::thread` (`M:src/runtime/async_host_executor.cpp:12`, `:68`) but links `Threads::Threads` already at U (`U:src/runtime/CMakeLists.txt:64`, PRIVATE), so C02 does not need this change.
+- requires: none. Checked and ruled out: C02's `async_host_executor.cpp` uses `std::thread` (`M:src/runtime/async_host_executor.cpp:12`, `:68`) but links `Threads::Threads` already at U (`U:src/runtime/CMakeLists.txt:64`, PRIVATE), so C02 does not need this change. The `CMAKE_DL_LIBS` line moved here from C01 at Review 1 (U02); its comment names `getLibMvecDir()`, which is C01's code (`M:src/compiler/llvm-to-backend/CMakeLists.txt:203`), so on U alone the line links a library nothing uses yet.
 - pending: none
 - seams: none
 - applicability: clean
-- open upstream PRs by path: #2283 #1948 #1946 #1778 #1670 #1562 #1362 #1095
+- open upstream PRs by path: #2283 #2268 #2170 #2166 #2160 #2131 #1948 #1946 #1778 #1670 #1562 #1362 #1095 #1094
+- flag inputs: adds=none; contested=no; overlap=none (path-only overlap with #2283, #1948, #1946, #1778, #1670, #1562, #1362, #1095; not read)
+- conversation: no
+- horizon: now
+- next step: prepare PR | owner: Research Lead | done: a branch on U carries exactly the hunks of this candidate and its textual trial merge is clean
 
 ```assignment C19
 hunks
   cmake/adaptivecpp-config.cmake.in @9,3
   cmake/hipsycl-config.cmake.in @14,3
   cmake/opensycl-config.cmake.in @11,3
+  src/compiler/llvm-to-backend/CMakeLists.txt @200,21:1-5
   src/runtime/CMakeLists.txt @65,7 @532,4
 ```
 
 ## C20 pixi workspace and packages
 
-- title: pixi workspace: pixi-build packages for the toolchain, their build scripts, environments and tasks
-- intent: Provide a pixi workspace that builds the AdaptiveCpp toolchain from source as conda packages (core build, slices, runtime vendor extras, compiler activation, consumer check), with tasks to build and run the test suite and sanitizer smoke tests against the installed environment.
+- title: pixi workspace: pixi-build packages for the toolchain, their build scripts, source pins and patches, environments and tasks
+- intent: Provide a pixi workspace that builds the AdaptiveCpp toolchain from source as conda packages (core build with its source pins and patches, slices, runtime vendor extras, compiler activation, consumer check), with tasks to build and run the test suite and sanitizer smoke tests against the installed environment.
 - kind: pixi workspace
-- secondary: other: vendored third-party (`packages/activations/vendor/ctng-compiler-activation`, conda-forge's compiler activation scripts, pinned by `PINNED_REF`), other: tooling/CI (`naga/tasks`, `.pixi/config.toml`)
-- size: files 50, lines +7553 / -0 (of which `pixi.lock` is +3824)
-- large: yes. Proposed split (not decided): (a) workspace manifest, lock and tasks (`pixi.toml`, `pixi.lock`, `naga/tasks/**`, `.pixi/config.toml`, `.gitignore` hunk); (b) package slices and vendor extras (`packages/slices/**`, `packages/extras/**`, `packages/checks/**`); (c) core build and compiler activation (`packages/core/**` except KF3, `packages/activations/**`).
-- requires: C01, C03, C04. Evidence: C01: `M:packages/core/build-lib.nu:41-44` passes `-DACPP_CUDA_ROOT=.`, `-DACPP_OCL_ROOT=.`, `-DACPP_ZE_ROOT=.`, `-DACPP_LIBOMP_ROOT=lib`, options that exist only in the model of `M:cmake/options/common/core.cmake:221-231` (`ACPP_<STEM>_ROOT`). C03: `M:packages/core/build-lib.nu:52-53` ("this build is LLVM 23 (AMD snapshot)", `-DACPP_EXPERIMENTAL_LLVM=ON`). C04: `M:packages/core/build-lib.nu:27` (`-DLLVM_ENABLE_RUNTIMES=compiler-rt;openmp`) and `:37` (`-DLLVM_ADAPTIVECPP_LINK_INTO_TOOLS=ON`), handled by `M:src/runtime/CMakeLists.txt:378` (`"openmp" IN_LIST LLVM_ENABLE_RUNTIMES`).
+- secondary: other: vendored third-party (`packages/activations/vendor/ctng-compiler-activation`, conda-forge's compiler activation scripts, pinned by `PINNED_REF`), other: tooling/CI (`naga/tasks`, `.pixi/config.toml`), other: patches to a pinned LLVM snapshot (`packages/core/patches`, moved here from KF3 at Review 1, U06)
+- size: files 60, lines +8204 / -0 (of which `pixi.lock` is +3824)
+- large: yes (kept at Review 1, U12). Proposed split, to be decided in the conversation: (a) workspace manifest, lock and tasks (`pixi.toml`, `pixi.lock`, `naga/tasks/**`, `.pixi/config.toml`, `.gitignore` hunk); (b) package slices and vendor extras (`packages/slices/**`, `packages/extras/**`, `packages/checks/**`); (c) core build, sources and compiler activation (`packages/core/**`, `packages/activations/**`).
+- requires: C01, C03, C04. Evidence is in the requires block; C03 carries the pending edge on #1986, so this candidate waits on it through C03.
 - pending: maintainer decision: whether upstream wants a pixi manifest. Discussion #1981: Jack offered to submit it on 2026-09-04 and illuhad replied on 2026-09-09 asking what infrastructure the packaging needs and whether it could be upstreamed; no answer on the `pixi build` offer was found (baseline.md, maintainer statements).
-- seams: relies on keep-in-fork decision KF3 (patches to the pinned LLVM snapshot and `pins.toml`). Evidence: `M:packages/core/fetch-sources.nu:70` opens `pins.toml` and `:71` names the `patches` directory. Resolution: rework needed (make the source pins and patch set an input of the package instead of files in `packages/core`), unless Jack moves KF3 into this candidate at Review 1. The package and channel names (`naga-acpp-*`, channel `https://prefix.dev/jackm97/naga-labs`, backend `pixi-build-naga`) are fork identity: contested, fallback keep-in-fork (unresolved U07).
+- seams: KF4 (the pinned translator commit lives in the fork's translator repository); see the seams block. The patches and pins (KF3 before Review 1) are part of this candidate now, so that seam is resolved. Renaming the `naga-acpp-*` packages and the channel `https://prefix.dev/jackm97/naga-labs` is preparation for this candidate's PR (Review 1, U07), not a separate disposition.
 - applicability (with C01, C03, C04): conflicting files: `CMakeLists.txt`, `include/hipSYCL/common/settings.hpp`, `src/compiler/llvm-to-backend/CMakeLists.txt` (all from C01)
 - open upstream PRs by path: none
+- flag inputs: adds=none; contested=yes; overlap=none
+- conversation: yes (criteria a,c,d)
+- question: Would AdaptiveCpp take a pixi workspace that builds the toolchain as conda packages (core build with source pins and patches, slices, runtime vendor extras, compiler activation, consumer check, lock file in the tree), and in what shape? For LLVM 23 builds against a development snapshot: is the development-version rule at `CMakeLists.txt:481` and `:486` something you want to keep or relax (the question C03 rides on)?
+- venue: existing discussion #1981 (Jack's offer of 2026-09-04, illuhad's question of 2026-09-09)
+- offer: the pixi workspace and packages, with the `naga-acpp-*` names and the channel replaced before the PR
+- horizon: after conversation
+- next step: open conversation | owner: Jack | done: the comment is posted in discussion #1981 with the recorded questions and the maintainers' answers are recorded in decisions.md
 
 ```assignment C20
 paths
@@ -592,12 +675,14 @@ paths
   packages/checks/**
   packages/core/activation/**
   packages/core/licenses/**
+  packages/core/patches/**
   packages/extras/**
   packages/slices/**
   packages/README.md
   packages/core/build-lib.nu
   packages/core/build-linux.nu
   packages/core/fetch-sources.nu
+  packages/core/pins.toml
   packages/core/pixi.toml
   packages/core/write-build-cfg.nu
   pixi.lock
@@ -608,24 +693,36 @@ hunks
 
 ## Dependency map (D1)
 
-Edges, `A -> B` = A requires B:
+Edges, `A -> B type evidence` = A requires B; the evidence is `M:<path>:<line> <token>` and the token must be on that line of the tree M:
 
 ```requires
-C17 -> C01 symbol
-C20 -> C01 option
-C20 -> C03 llvm-version
-C20 -> C04 mechanism
+C20 -> C01 option M:packages/core/build-lib.nu:41 ACPP_CUDA_ROOT
+C20 -> C03 llvm-version M:packages/core/build-lib.nu:52 LLVM
+C20 -> C04 mechanism M:packages/core/build-lib.nu:37 LLVM_ADAPTIVECPP_LINK_INTO_TOOLS
 ```
 
-Every other candidate requires no candidate. Topological order (prerequisites first): C01, C03, C04, then C17 and C20, with C02, C05-C16, C18 and C19 free; the graph is acyclic. Merged cycle: the host JIT vector-math change into C01 (see C01).
+Upstream-pending edges, `candidate kind number-or-text`; a `pr` edge names an open upstream PR and is checked against GitHub:
 
-Upstream-pending edges: C01 (maintainer decision on the configuration model), C03 (maintainer decision on LLVM 23 as a development version; PR #1986), C20 (maintainer decision on a pixi manifest), C07 and C15 (overlap with open PRs #2282 and #2307 that may carry the same fix; overlap, not a requirement).
+```pending
+C03 pr 1986 Support LLVM 22
+C07 pr 2282 Fix known identity for group algorithms
+C01 decision configuration model for relocatable installs
+C20 decision pixi manifest in the repository
+```
 
-Seams: C01 (fork-URL lines in hunks `@268,7`, `@244,15`), C20 (KF3, source pins and patches). All other candidates: none.
+Seams, `candidate keep-in-fork resolution evidence-token | note`; the resolution is `pending` (a named upstream PR carries the change, with its Review 1 reference) or `rework` (the rework needed):
+
+```seams
+C03 KF6 pending M:src/compiler/AdaptiveCppLlvmPasses.cpp:43 PassPlugin | the LLVM 23 build needs the LLVM 22 plugin-header move that #1986 also makes (Review 1, U08)
+C07 KF7 pending M:tests/sycl/group_functions/group_functions_scan.cpp:1004 known_identity_v | the tests expect the identities that #2282 also makes (Review 1, C07 amendment)
+C20 KF4 rework M:packages/core/build-lib.nu:57 LLVMSPIRV_COMMIT | the pinned commit exists only in the fork's translator repository that the URL line in KF4 selects; rework: carry the repository URL as a configure input of the package build, so the upstream URL stays in C01
+```
+
+Every other candidate has no requires, no pending edge and no seam. The graph is acyclic; topological order (prerequisites first): C01, C03, C04, then C20, with every other candidate free. Merged cycle: the host JIT vector-math change into C01 (see C01). Review 1 changes to the graph: C17 no longer requires C01 (U02); C01's seam on the translator URL is resolved (U03); C20's seam on KF3 is resolved by moving KF3 into C20 (U06); C03 and C07 gained pending edges and seams on KF6 and KF7.
 
 ## Applicability (D2) method
 
-For a candidate X with prerequisite closure P (`C17 -> {C17, C01}`, `C20 -> {C20, C01, C03, C04}`, otherwise `{X}`): select every hunk of every path of the difference set whose owner is in P (whole paths contribute all their hunks), apply the selected hunks of `git diff --no-renames -U0 U M` to U's file content by old-side coordinates (no git apply heuristics), and check that every hunk's removed lines equal U's lines at the old range. The result is `clean` when all selected hunks match U and none of them carries a conflict marker line (`<<<<<<<`); otherwise the files whose selected hunks carry markers are listed as conflicting. A sanity run applies all hunks of all 370 paths and compares the result with M: 0 mismatches. Keep-in-fork decisions are not prerequisites.
+For a candidate X with prerequisite closure P (`C20 -> {C20, C01, C03, C04}`, otherwise `{X}`): select every part of every hunk of the difference set whose owner is in P (whole paths contribute all their hunks; a split hunk contributes its lines owned by P), apply the selected parts of `git diff --no-renames -U0 U M` to U's file content by old-side coordinates (no git apply heuristics), and check that every touched hunk's removed lines equal U's lines at the old range. The result is `clean` when all touched hunks match U and no selected added line starts with `<<<<<<< `; otherwise the files whose selected lines carry markers are listed as conflicting. A sanity run applies every part of every disposition to all 370 paths and compares the result with M.
 
 | candidate | closure | hunks match U | conflicting files |
 |---|---|---|---|
@@ -635,17 +732,16 @@ For a candidate X with prerequisite closure P (`C17 -> {C17, C01}`, `C20 -> {C20
 | C04 | C04 | yes | none |
 | C05 | C05 | yes | none |
 | C06 | C06 | yes | none |
-| C07 | C07 | yes | `include/hipSYCL/sycl/libkernel/sscp/builtins/detail/reduction.hpp` |
+| C07 | C07 | yes | none |
 | C08 | C08 | yes | none |
 | C09 | C09 | yes | `include/hipSYCL/runtime/omp/omp_queue.hpp` |
-| C10 | C10 | yes | none |
 | C11 | C11 | yes | none |
 | C12 | C12 | yes | none |
 | C13 | C13 | yes | none |
 | C14 | C14 | yes | none |
 | C15 | C15 | yes | none |
 | C16 | C16 | yes | none |
-| C17 | C17, C01 | yes | `CMakeLists.txt`, `include/hipSYCL/common/settings.hpp`, `include/hipSYCL/compiler/llvm-to-backend/Utils.hpp`, `src/compiler/llvm-to-backend/CMakeLists.txt` |
+| C17 | C17 | yes | `include/hipSYCL/compiler/llvm-to-backend/Utils.hpp` |
 | C18 | C18 | yes | none |
 | C19 | C19 | yes | none |
 | C20 | C20, C01, C03, C04 | yes | `CMakeLists.txt`, `include/hipSYCL/common/settings.hpp`, `src/compiler/llvm-to-backend/CMakeLists.txt` |

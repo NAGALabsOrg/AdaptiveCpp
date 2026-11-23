@@ -11,6 +11,8 @@ B = 9ec394efa584ced004d644af2194d2133e111d26  merge-base of U and N  2026-10-12T
 M = 350667e47d62407ad9bef5977bdab5a632ae8e87  textual merge of N into U: `git merge-tree --write-tree --name-only --no-messages U N`, exit 1 (conflicts), 6 conflicted paths
 ```
 
+Re-check 2026-11-23: `git fetch upstream` left `upstream/develop` at U (0 commits beyond U).
+
 M is a tree object only (no branch or ref). Its conflicted paths carry conflict markers (`<<<<<<< U-sha` .. `>>>>>>> N-sha`) in M.
 
 ## Divergence counts at the pins
@@ -633,6 +635,7 @@ All items looked up 2026-11-22. Quotes are verbatim (hard line wraps removed).
 - Freeze rule, last two weeks: "In the last two weeks prior to release, new features should only be added for components of the stack that are still under heavy development (e.g. the SSCP compiler or stdpar support)."
 - Observed releases (source: `git tag --sort=-creatordate` and `gh release list -R AdaptiveCpp/AdaptiveCpp`): v25.10.0 2025-11-05 (latest), v25.02.0 2025-05-09, v24.10.0 2024-12-20, v24.06.0 2024-07-29, v24.02.0 2024-03-11, v23.10.0 2023-10-30. No tag exists after v25.10.0; `CMakeLists.txt` at U still sets `ACPP_VERSION_MAJOR 25` / `ACPP_VERSION_MINOR 10` (lines 15-16); PR #2108 "Bump version to 26.10" (illuhad, opened 2026-06-23) is open. The nominal slots 26.02, 26.06 and 26.10 have passed without a release.
 - Next release date: not announced in any source found. The next nominal slot after the lookup date is the end of February 2027 (`year.02`), by cadence only.
+- Milestone (source: `gh api repos/AdaptiveCpp/AdaptiveCpp/milestones/7`, lookup 2026-11-23): the milestone `26.10.0` is open with 13 open and 8 closed items, no due date, updated 2026-11-19T20:05:03Z; PRs #2273, #2282, #2307 and #1986 carry it. This disagrees with the cadence above (the end-of-October 2026 slot passed without a tag); both are recorded and not reconciled.
 
 **Sequencing expectations** (source: `CONTRIBUTING.md` at U):
 - Line 3: "When in doubt about how to implement something or how to integrate with the overall project strategy, please just open an issue for discussion."
