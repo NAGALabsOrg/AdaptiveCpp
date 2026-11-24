@@ -237,6 +237,7 @@ std::shared_ptr<dag_node_event> ze_queue::insert_event() {
 }
 
 result ze_queue::submit_memcpy(memcpy_operation& op, const dag_node_ptr& node) {
+  resolve_enqueued_events();
   std::lock_guard<std::mutex> lock{_mutex};
 
   // TODO We could probably unify some of the logic here between
@@ -297,6 +298,7 @@ result ze_queue::submit_memcpy(memcpy_operation& op, const dag_node_ptr& node) {
 }
 
 result ze_queue::submit_kernel(kernel_operation& op, const dag_node_ptr& node) {
+  resolve_enqueued_events();
   std::lock_guard<std::mutex> lock{_mutex};
   
   rt::backend_kernel_launch_capabilities cap;
@@ -310,6 +312,7 @@ result ze_queue::submit_prefetch(prefetch_operation &, const dag_node_ptr& node)
 }
 
 result ze_queue::submit_memset(memset_operation& op, const dag_node_ptr& node) {
+  resolve_enqueued_events();
   std::lock_guard<std::mutex> lock{_mutex};
 
   std::shared_ptr<dag_node_event> completion_evt = create_event();
@@ -351,6 +354,44 @@ result ze_queue::submit_queue_wait_for(const dag_node_ptr& node) {
   auto evt = node->get_event();
   _enqueued_synchronization_ops.push_back(evt);
   return make_success();
+}
+
+bool ze_queue::needs_completed_requirements(operation &op,
+                                            const node_list_t &reqs) const {
+  // Any operation with an incomplete requirement from another backend, or one
+  // not issued to a backend queue (such as an async_host operation), is
+  // submitted only once that requirement has completed. It is then never
+  // appended behind an event that the host signals later, and never holds the
+  // queue's lock while waiting for host work.
+  for(const auto &req : reqs) {
+    if(req->is_known_complete())
+      continue;
+    // A requirement not issued to a backend queue (an async_host node) is
+    // external whichever device it was assigned, the same test submit_inline
+    // uses; it must be deferred, never expressed in the queue.
+    auto *req_executor = req->get_assigned_executor();
+    bool req_is_external =
+        req_executor && !req_executor->is_backend_queue();
+    if(req_is_external ||
+       req->get_assigned_device().get_backend() != get_device().get_backend())
+      return true;
+  }
+  return false;
+}
+
+std::shared_ptr<dag_node_event> ze_queue::create_deferred_event() {
+  return std::make_shared<ze_deferred_event>();
+}
+
+void ze_queue::stamp_deferred_event(dag_node_event &deferred,
+                                    std::shared_ptr<dag_node_event> actual) {
+  assert(dynamic_is<ze_deferred_event>(&deferred));
+  assert(!actual ||
+         dynamic_is<inorder_queue_event<ze_event_handle_t>>(actual.get()));
+
+  cast<ze_deferred_event>(&deferred)->stamp(
+      std::static_pointer_cast<inorder_queue_event<ze_event_handle_t>>(
+          std::move(actual)));
 }
 
 result ze_queue::submit_external_wait_for(const dag_node_ptr& node) {
@@ -412,11 +453,35 @@ ze_queue::get_enqueued_event_handles() const {
   if(!wait_events.empty()) {
     evts.reserve(wait_events.size());
     for(std::size_t i = 0; i < wait_events.size(); ++i) {
-      evts.emplace_back(static_cast<ze_node_event *>(wait_events[i].get())
-                    ->get_event_handle());
+      assert(dynamic_is<inorder_queue_event<ze_event_handle_t>>(
+          wait_events[i].get()));
+
+      ze_event_handle_t handle =
+          cast<inorder_queue_event<ze_event_handle_t>>(wait_events[i].get())
+              ->request_backend_event();
+      // An operation that was never issued has no event to wait for.
+      if(handle)
+        evts.emplace_back(handle);
     }
   }
   return evts;
+}
+
+void ze_queue::resolve_enqueued_events() {
+  std::vector<std::shared_ptr<dag_node_event>> pending;
+  {
+    std::lock_guard<std::mutex> lock{_mutex};
+    pending = _enqueued_synchronization_ops;
+  }
+
+  for(const auto &evt : pending) {
+    evt->wait_for_submission();
+    assert(dynamic_is<inorder_queue_event<ze_event_handle_t>>(evt.get()));
+    // Some events only create their backend event when it is first requested,
+    // which may take locks of the queue they belong to.
+    cast<inorder_queue_event<ze_event_handle_t>>(evt.get())
+        ->request_backend_event();
+  }
 }
 
 void ze_queue::register_submitted_op(std::shared_ptr<dag_node_event> evt) {

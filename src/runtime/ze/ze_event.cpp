@@ -61,6 +61,42 @@ ze_event_handle_t ze_node_event::request_backend_event() {
   return get_event_handle();
 }
 
+void ze_deferred_event::stamp(
+    std::shared_ptr<inorder_queue_event<ze_event_handle_t>> evt) {
+  {
+    std::lock_guard<std::mutex> lock{_mutex};
+    _evt = std::move(evt);
+    _is_stamped = true;
+  }
+  _submitted.notify_all();
+}
+
+void ze_deferred_event::wait_for_submission() const {
+  if(_is_stamped)
+    return;
+
+  std::unique_lock<std::mutex> lock{_mutex};
+  _submitted.wait(lock, [this]{ return _is_stamped.load(); });
+}
+
+bool ze_deferred_event::is_complete() const {
+  if(!_is_stamped)
+    return false;
+  return _evt ? _evt->is_complete() : true;
+}
+
+void ze_deferred_event::wait() {
+  wait_for_submission();
+  if(_evt)
+    _evt->wait();
+}
+
+ze_event_handle_t ze_deferred_event::request_backend_event() {
+  wait_for_submission();
+  // A null handle stands for an operation that was never issued.
+  return _evt ? _evt->request_backend_event() : ze_event_handle_t{};
+}
+
 }
 }
 

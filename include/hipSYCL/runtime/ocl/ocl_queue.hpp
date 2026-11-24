@@ -53,6 +53,14 @@ public:
   virtual result submit_queue_wait_for(const dag_node_ptr& evt) override;
   virtual result submit_external_wait_for(const dag_node_ptr& node) override;
 
+  virtual bool needs_completed_requirements(operation &op,
+                                            const node_list_t &reqs) const override;
+
+  virtual bool supports_deferred_submission() const override { return true; }
+  virtual std::shared_ptr<dag_node_event> create_deferred_event() override;
+  virtual void stamp_deferred_event(dag_node_event &deferred,
+                                    std::shared_ptr<dag_node_event> actual) override;
+
   virtual result wait() override;
 
   virtual device_id get_device() const override;

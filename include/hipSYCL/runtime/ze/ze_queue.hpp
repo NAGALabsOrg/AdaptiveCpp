@@ -52,6 +52,14 @@ public:
   virtual result submit_queue_wait_for(const dag_node_ptr& evt) override;
   virtual result submit_external_wait_for(const dag_node_ptr& node) override;
 
+  virtual bool needs_completed_requirements(operation &op,
+                                            const node_list_t &reqs) const override;
+
+  virtual bool supports_deferred_submission() const override { return true; }
+  virtual std::shared_ptr<dag_node_event> create_deferred_event() override;
+  virtual void stamp_deferred_event(dag_node_event &deferred,
+                                    std::shared_ptr<dag_node_event> actual) override;
+
   virtual result wait() override;
 
   virtual device_id get_device() const override;
@@ -79,8 +87,18 @@ private:
   const std::vector<std::shared_ptr<dag_node_event>>&
   get_enqueued_synchronization_ops() const;
   
+  /// Native handles of the events the next operation must wait for. Events
+  /// that were never issued have no handle and are skipped. Asks each event
+  /// for its backend event, which for an event that is still waiting to be
+  /// issued blocks, so resolve_enqueued_events() must have run before the
+  /// lock was taken.
   std::vector<ze_event_handle_t>
   get_enqueued_event_handles() const;
+
+  /// Waits until every event the next operation must wait for has been issued
+  /// and has a backend event. Must be called without _mutex held: an event
+  /// still waiting to be issued is waited for here, never under the lock.
+  void resolve_enqueued_events();
 
   void register_submitted_op(std::shared_ptr<dag_node_event> evt);
 

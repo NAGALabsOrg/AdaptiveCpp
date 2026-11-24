@@ -14,6 +14,7 @@
 #include "hipSYCL/runtime/serialization/serialization.hpp"
 #include "hipSYCL/runtime/kernel_cache.hpp"
 #include "hipSYCL/runtime/inorder_queue.hpp"
+#include "hipSYCL/runtime/util.hpp"
 #include "hipSYCL/runtime/executor.hpp"
 #include "hipSYCL/runtime/code_object_invoker.hpp"
 #include "hipSYCL/runtime/ocl/ocl_code_object.hpp"
@@ -406,6 +407,11 @@ result ocl_queue::submit_queue_wait_for(const dag_node_ptr& evt) {
   
   std::vector<cl::Event> events{ocl_evt->request_backend_event()};
 
+  // A deferred operation that was never issued has no backend event; there is
+  // nothing to wait for.
+  if(!events[0].get())
+    return make_success();
+
   if (_hw_manager->get_context(evt->get_assigned_device()) !=
       _hw_manager->get_context(_hw_manager->get_device_id(_device_index))) {
     return submit_external_wait_for(evt);
@@ -423,6 +429,46 @@ result ocl_queue::submit_queue_wait_for(const dag_node_ptr& evt) {
   }
   register_submitted_op(wait_evt);
   return make_success();
+}
+
+bool ocl_queue::needs_completed_requirements(operation &op,
+                                             const node_list_t &reqs) const {
+  // The OpenCL backend used to park its in-order queue on a user event for
+  // host-task requirements (submit_external_wait_for), which deadlocks when the
+  // host task needs work that lands behind that barrier. Deferral holds the
+  // operation back until its requirements have completed instead, as on CUDA.
+  //
+  // Any operation with an incomplete requirement from another backend, or one
+  // not issued to a backend queue (such as an async_host operation), is
+  // submitted only once that requirement has completed.
+  for(const auto &req : reqs) {
+    if(req->is_known_complete())
+      continue;
+    // A requirement not issued to a backend queue (an async_host node) is
+    // external whichever device it was assigned, the same test submit_inline
+    // uses; it must be deferred, never expressed in the queue.
+    auto *req_executor = req->get_assigned_executor();
+    bool req_is_external =
+        req_executor && !req_executor->is_backend_queue();
+    if(req_is_external ||
+       req->get_assigned_device().get_backend() != get_device().get_backend())
+      return true;
+  }
+  return false;
+}
+
+std::shared_ptr<dag_node_event> ocl_queue::create_deferred_event() {
+  return std::make_shared<ocl_deferred_event>();
+}
+
+void ocl_queue::stamp_deferred_event(dag_node_event &deferred,
+                                     std::shared_ptr<dag_node_event> actual) {
+  assert(dynamic_is<ocl_deferred_event>(&deferred));
+  assert(!actual || dynamic_is<inorder_queue_event<cl::Event>>(actual.get()));
+
+  cast<ocl_deferred_event>(&deferred)->stamp(
+      std::static_pointer_cast<inorder_queue_event<cl::Event>>(
+          std::move(actual)));
 }
 
 result ocl_queue::submit_external_wait_for(const dag_node_ptr& node) {
