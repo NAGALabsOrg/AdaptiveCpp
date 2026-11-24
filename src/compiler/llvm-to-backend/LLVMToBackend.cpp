@@ -336,16 +336,12 @@ bool LLVMToBackendTranslator::prepareIR(llvm::Module &M) {
     std::vector<std::string> InitialOutliningEntrypoints = OutliningEntrypoints;
     for(const auto& FName : FunctionCallSpecializationOutliningEntrypoints)
       InitialOutliningEntrypoints.push_back(FName);
-    // A composition needs its drivers and every body, write and positions
-    // function it names, though none is reachable from the kernel until the
-    // composition step has run.
+    // A composition needs its placeholder and every task function it names,
+    // though none is reachable from the kernel until the composition step has run.
     if(Composition.has_value()) {
-      for(const auto& FName : glue::sscp::composition_driver_symbols())
-        InitialOutliningEntrypoints.push_back(FName);
       for(const auto& FName : Composition->imported_symbols())
         InitialOutliningEntrypoints.push_back(FName);
-      for(const char* FName : composition_detail::PlaceholderNames)
-        InitialOutliningEntrypoints.push_back(FName);
+      InitialOutliningEntrypoints.push_back(compositionPlaceholderName());
     }
     KernelOutliningPass InitialOutlining{InitialOutliningEntrypoints};
     InitialOutlining.run(M, MAM);
@@ -372,28 +368,10 @@ bool LLVMToBackendTranslator::prepareIR(llvm::Module &M) {
     
     enableModuleStateDumping(M, "specialization", getCompilationIdentifier());
 
-    composition_options CompositionOptions;
     if(Composition.has_value()) {
-      using backend_t = hipsycl::sycl::AdaptiveCpp_jit::compiler_backend;
-      composition_target Target = composition_target::other;
-      switch(static_cast<backend_t>(this->getBackendId())) {
-      case backend_t::host:
-        Target = composition_target::host;
-        break;
-      case backend_t::ptx:
-        Target = composition_target::ptx;
-        break;
-      case backend_t::spirv:
-        Target = composition_target::spirv;
-        break;
-      default:
-        break;
-      }
-      CompositionOptions = composition_options::for_target(Target);
       HIPSYCL_DEBUG_INFO << "LLVMToBackend: Composing kernel...\n";
       std::vector<std::string> CompositionErrors;
-      bool Composed =
-          applyComposition(M, *Composition, CompositionErrors, CompositionOptions);
+      bool Composed = applyComposition(M, *Composition, CompositionErrors);
       for(const auto& E : CompositionErrors)
         registerError("LLVMToBackend: " + E);
       if(!Composed)
@@ -547,8 +525,6 @@ bool LLVMToBackendTranslator::prepareIR(llvm::Module &M) {
       }
     }
     llvm::AlwaysInlinerPass{}.run(M, MAM);
-    if(Composition.has_value() && CompositionOptions.keep_layer_calls)
-      releaseKeptLayerCalls(M);
 
     enableModuleStateDumping(M, "full_optimizations", getCompilationIdentifier());
     
