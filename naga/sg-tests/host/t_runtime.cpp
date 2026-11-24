@@ -1,492 +1,382 @@
 #include "../common/check.hpp"
+#include "../common/graphs.hpp"
 #include "../common/mocks.hpp"
 
-#include "hipSYCL/runtime/composition_adaptivity.hpp"
-#include "hipSYCL/sg/detail/kernel_preparer.hpp"
-#include "hipSYCL/sg/detail/launcher.hpp"
-#include "hipSYCL/sg/detail/tree_store.hpp"
-#include "hipSYCL/sg/kernel.hpp"
-#include "hipSYCL/sg/mapping_forms.hpp"
-#include "hipSYCL/sg/roles.hpp"
+#include <algorithm>
+#include <functional>
+#include <map>
+#include <set>
+#include <string>
 
-using namespace sg;
-using namespace sg::detail;
+using namespace sgt;
 
 namespace {
-device_limits lim() { return device_limits{1024, 48 * 1024, 1u << 30}; }
 
-struct builder_a {};
-struct builder_b {};
+sg::detail::access acc(std::size_t h, access_mode m, int group = -1) {
+  return sg::detail::access{h, {0, 64}, m, group};
+}
 
-// a node with one result slot of `n` ints and a builder running `body`
-struct kernel_node {
-  sgt::rig r;
-  node_record *n;
-  array<result<int>, 1> *out = nullptr;
-  std::unique_ptr<array<result<int>, 1>> out_holder;
-  kernel_node(std::size_t count = 8) {
-    n = &r.impl->begin_scope(sycl::device{});
-    auto h = handle_access::make<mem_handle<int>>(r.impl.get(), r.impl->add_handle(type_id<int>(), 4));
-    out_holder = std::make_unique<array<result<int>, 1>>(h, shape<1>(sycl::range<1>(count)));
-    n->kind = node_record::kind_t::kernel;
-    n->defines = 1;
+std::unique_ptr<prepared_kernel> prep(rig &r, std::vector<std::int64_t> values = {}) {
+  return std::make_unique<prepared_kernel>(kernel_preparer::prepare(r.impl->nodes().at(0)->graph, values));
+}
+template <class F> void submit_kernel(rig &r, F f) { r.g->submit(sycl::device{}, [&](sg::kernel_handle &kh) { f(kh); }); }
+
+// the ticket of a task instance's group
+int ticket_of(const tile_graph &tg, int task) { return tg.ticket_of_group[tg.tasks[task].group]; }
+
+// every pull comes from a lower ticket, or from an earlier task of the same group
+bool order_is_valid(const tile_graph &tg) {
+  for (const pull &p : tg.pulls) {
+    if (p.by_data && p.producer_unit >= 0)
+      continue;
+    int producer = -1;
+    for (std::size_t i = 0; i < tg.tasks.size(); ++i)
+      if (tg.tasks[i].map == p.producer_map && tg.tasks[i].tile == p.producer_tile)
+        producer = static_cast<int>(i);
+    if (producer < 0)
+      return false;
+    const int pt = ticket_of(tg, producer), ct = ticket_of(tg, p.consumer);
+    if (pt > ct)
+      return false;
+    if (pt == ct && tg.tasks[producer].map >= tg.tasks[p.consumer].map)
+      return false;
   }
-  ~kernel_node() { r.impl->abort_scope(); }
-  template <class B> void set_builder(B b, std::uint64_t type = type_id<builder_a>()) {
-    n->builder = std::move(b);
-    n->builder_type = type;
-  }
-  std::vector<slot_binding> bindings(std::size_t count = 8) {
-    std::vector<slot_binding> v(1);
-    v[0].address = 0x1000;
-    v[0].extent[0] = count;
-    return v;
-  }
-};
+  return true;
+}
+
 } // namespace
 
-BOOST_AUTO_TEST_SUITE(tree_store_suite)
-BOOST_AUTO_TEST_CASE(find_insert) {
-  tree_store s;
-  auto k1 = make_key(std::make_tuple(1, 2));
-  BOOST_CHECK(!s.find(1, *k1));
-  auto t = std::make_shared<kernel_tree>();
-  s.insert(1, make_key(std::make_tuple(1, 2)), t);
-  BOOST_CHECK(s.find(1, *k1) == t);
-  auto k2 = make_key(std::make_tuple(1, 3));
-  BOOST_CHECK(!s.find(1, *k2));
-  BOOST_CHECK(!s.find(2, *k1));
-  auto t2 = std::make_shared<kernel_tree>();
-  s.insert(1, make_key(std::make_tuple(1, 3)), t2);
-  BOOST_CHECK(s.find(1, *k1) == t);
-  BOOST_CHECK(s.find(1, *k2) == t2);
-  auto k3 = make_key(std::make_tuple(std::string("x")));
-  BOOST_CHECK(!s.find(1, *k3));
-}
-BOOST_AUTO_TEST_SUITE_END()
+BOOST_AUTO_TEST_SUITE(dependencies)
 
-BOOST_AUTO_TEST_SUITE(builder_suite)
-BOOST_AUTO_TEST_CASE(item_definition) {
-  kernel_node kn;
-  auto *out = kn.out_holder.get();
-  int calls = 0;
-  kn.set_builder([out, &calls](kernel_handle &kh) {
-    ++calls;
-    auto d = kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), [](sg::item<1>) { return 7; });
-    *out = kh.evaluate(d);
-  });
-  tree_store store;
-  kernel_preparer prep(store);
-  const auto pk = prep.prepare(*kn.n, kn.bindings(), lim());
-  BOOST_CHECK_EQUAL(calls, 1);
-  const auto &defs = pk.tree->defs;
-  BOOST_REQUIRE_EQUAL(defs.nodes.size(), 1u);
-  BOOST_CHECK(defs.nodes[0].kind == body_kind::item_body);
-  BOOST_CHECK_EQUAL(defs.nodes[0].range[0], 8u);
-  BOOST_CHECK_EQUAL(defs.nodes[0].group_shape[0], 4u);
-  BOOST_CHECK_EQUAL(defs.nodes[0].type, type_id<int>());
-  BOOST_CHECK(!defs.nodes[0].body_symbol.empty());
-  BOOST_CHECK(!defs.nodes[0].store_symbol.empty());
-  BOOST_REQUIRE_EQUAL(defs.sinks.size(), 1u);
-  BOOST_CHECK_EQUAL(defs.sinks[0].slot, 0u);
-  BOOST_CHECK_EQUAL(pk.plan.grid, 2u);
-  BOOST_CHECK_EQUAL(pk.plan.work_group_size, 4u);
+BOOST_AUTO_TEST_CASE(all_nine_ordered_pairs_of_read_write_inplace) {
+  struct row {
+    access_mode first, second;
+    int g1, g2;
+    std::vector<op_id> expected;
+  };
+  const std::vector<row> rows = {
+      {access_mode::read, access_mode::read, -1, -1, {}},
+      {access_mode::read, access_mode::write, -1, -1, {1}},
+      {access_mode::read, access_mode::inplace, -1, 5, {1}},
+      {access_mode::write, access_mode::read, -1, -1, {1}},
+      {access_mode::write, access_mode::write, -1, -1, {1}},
+      {access_mode::write, access_mode::inplace, -1, 5, {1}},
+      {access_mode::inplace, access_mode::read, 5, -1, {1}},
+      {access_mode::inplace, access_mode::write, 5, -1, {1}},
+      {access_mode::inplace, access_mode::inplace, 5, 6, {1}},
+      {access_mode::inplace, access_mode::inplace, 5, 5, {}},
+  };
+  for (const row &r : rows) {
+    dependency_tracker t;
+    t.commit(1, {acc(0, r.first, r.g1)});
+    BOOST_CHECK((t.resolve({acc(0, r.second, r.g2)}) == r.expected));
+  }
 }
-BOOST_AUTO_TEST_CASE(non_multiple_range) {
-  kernel_node kn;
-  kn.set_builder([](kernel_handle &kh) {
-    kh.parallel_for(sycl::range<1>(10), sycl::range<1>(4), [](sg::item<1>) { return 1; });
-  });
-  tree_store store;
-  kernel_preparer prep(store);
-  SG_CHECK_ERRC(prep.prepare(*kn.n, kn.bindings(), lim()), shape_mismatch);
-}
-BOOST_AUTO_TEST_CASE(maps_and_group_body) {
-  kernel_node kn(4);
-  auto *out = kn.out_holder.get();
-  kn.set_builder([out](kernel_handle &kh) {
-    auto a = kh.parallel_for(sycl::range<1>(16), sycl::range<1>(4), [](sg::item<1> it) { return int(it.id()[0]); });
-    auto m = kh.map_groups<mapping::local>(a, [](sycl::id<1> g) { return sg::block<1>{g, sycl::range<1>(2)}; });
-    auto g = kh.parallel_for(sycl::range<1>(4), m,
-                             [](sg::group<1>, group_iterator<int, 1, mapping::local> it) {
-                               return group_reduce<1>(it[0], 0, sycl::plus<>{});
-                             });
-    *out = kh.evaluate(g);
-  });
-  tree_store store;
-  kernel_preparer prep(store);
-  const auto pk = prep.prepare(*kn.n, kn.bindings(4), lim());
-  const auto &defs = pk.tree->defs;
-  BOOST_REQUIRE_EQUAL(defs.nodes.size(), 2u);
-  BOOST_CHECK(defs.nodes[1].kind == body_kind::group_body);
-  BOOST_REQUIRE_EQUAL(defs.nodes[1].links.size(), 1u);
-  BOOST_CHECK(defs.nodes[1].links[0].kind == link_kind::local);
-  BOOST_CHECK(defs.nodes[1].links[0].form == form_kind::block);
-  BOOST_CHECK_EQUAL(defs.nodes[1].links[0].count, 2u);
-  BOOST_CHECK_EQUAL(defs.nodes[1].links[0].source, 0);
-  BOOST_CHECK_EQUAL(defs.nodes[1].group_shape[0], 1u);
-  BOOST_CHECK(defs.nodes[1].scratch_bytes > 0);
-  BOOST_CHECK_EQUAL(defs.nodes[1].type, type_id<int>());
-}
-BOOST_AUTO_TEST_CASE(evaluate_twice_and_non_result) {
-  kernel_node kn;
-  auto *out = kn.out_holder.get();
-  kn.set_builder([out](kernel_handle &kh) {
-    auto d = kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), [](sg::item<1>) { return 1; });
-    *out = kh.evaluate(d);
-    *out = kh.evaluate(d);
-  });
-  tree_store store;
-  kernel_preparer prep(store);
-  SG_CHECK_ERRC(prep.prepare(*kn.n, kn.bindings(), lim()), builder_misuse);
-}
-BOOST_AUTO_TEST_CASE(shape_mismatch_at_evaluate) {
-  kernel_node kn(8);
-  auto *out = kn.out_holder.get();
-  kn.set_builder([out](kernel_handle &kh) {
-    auto d = kh.parallel_for(sycl::range<1>(16), sycl::range<1>(4), [](sg::item<1>) { return 1; });
-    *out = kh.evaluate(d);
-  });
-  tree_store store;
-  kernel_preparer prep(store);
-  SG_CHECK_ERRC(prep.prepare(*kn.n, kn.bindings(), lim()), shape_mismatch);
-}
-BOOST_AUTO_TEST_CASE(host_loop_makes_definitions) {
-  kernel_node kn;
-  auto *out = kn.out_holder.get();
-  kn.set_builder([out](kernel_handle &kh) {
-    auto d = kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), [](sg::item<1>) { return 1; });
-    for (int i = 0; i < 3; ++i) {
-      auto m = kh.map_groups<mapping::global>(d, [](sycl::id<1> g) { return single<1>{g}; });
-      d = kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), m,
-                          [](sg::item<1>, group_iterator<int, 1, mapping::global> it) { return int(it.size()); });
-    }
-    *out = kh.evaluate(d);
-  });
-  tree_store store;
-  kernel_preparer prep(store);
-  const auto pk = prep.prepare(*kn.n, kn.bindings(), lim());
-  BOOST_CHECK_EQUAL(pk.tree->defs.nodes.size(), 4u);
-  BOOST_CHECK_EQUAL(pk.tree->durable.layers.size(), 4u);
-}
-BOOST_AUTO_TEST_CASE(keys) {
-  kernel_node kn;
-  auto *out = kn.out_holder.get();
-  int calls = 0;
-  kn.set_builder([out, &calls](kernel_handle &kh) {
-    ++calls;
-    auto d = kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), [](sg::item<1>) { return 1; });
-    *out = kh.evaluate(d);
-  });
-  tree_store store;
-  kernel_preparer prep(store);
-  // no key: builder runs every time
-  prep.prepare(*kn.n, kn.bindings(), lim());
-  prep.prepare(*kn.n, kn.bindings(), lim());
-  BOOST_CHECK_EQUAL(calls, 2);
-  kn.n->key = make_key(std::make_tuple(1));
-  auto first = prep.prepare(*kn.n, kn.bindings(), lim());
-  BOOST_CHECK_EQUAL(calls, 3);
-  kn.n->key = make_key(std::make_tuple(1));
-  auto second = prep.prepare(*kn.n, kn.bindings(), lim());
-  BOOST_CHECK_EQUAL(calls, 3);
-  BOOST_CHECK(first.tree == second.tree);
-  kn.n->key = make_key(std::make_tuple(2));
-  prep.prepare(*kn.n, kn.bindings(), lim());
-  BOOST_CHECK_EQUAL(calls, 4);
-  kn.n->builder_type = type_id<builder_b>();
-  kn.n->key = make_key(std::make_tuple(1));
-  prep.prepare(*kn.n, kn.bindings(), lim());
-  BOOST_CHECK_EQUAL(calls, 5);
-  // a reused tree against a result of another size
-  kn.n->builder_type = type_id<builder_a>();
-  kn.n->key = make_key(std::make_tuple(1));
-  SG_CHECK_ERRC(prep.prepare(*kn.n, kn.bindings(9), lim()), shape_mismatch);
-}
-BOOST_AUTO_TEST_CASE(builder_exception_not_stored) {
-  kernel_node kn;
-  int calls = 0;
-  kn.set_builder([&calls](kernel_handle &) {
-    ++calls;
-    throw std::runtime_error("boom");
-  });
-  kn.n->key = make_key(std::make_tuple(1));
-  tree_store store;
-  kernel_preparer prep(store);
-  BOOST_CHECK_THROW(prep.prepare(*kn.n, kn.bindings(), lim()), std::runtime_error);
-  kn.n->key = make_key(std::make_tuple(1));
-  BOOST_CHECK_THROW(prep.prepare(*kn.n, kn.bindings(), lim()), std::runtime_error);
-  BOOST_CHECK_EQUAL(calls, 2);
-}
-BOOST_AUTO_TEST_CASE(plan_equals_plan_launch) {
-  kernel_node kn;
-  auto *out = kn.out_holder.get();
-  kn.set_builder([out](kernel_handle &kh) {
-    auto d = kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), [](sg::item<1>) { return 1; });
-    *out = kh.evaluate(d);
-  });
-  tree_store store;
-  kernel_preparer prep(store);
-  const auto pk = prep.prepare(*kn.n, kn.bindings(), lim());
-  std::vector<std::size_t> sizes;
-  for (auto &c : pk.tree->closures)
-    sizes.push_back(c.bytes.size());
-  const auto p = plan_launch(pk.tree->durable, pk.tree->defs, pk.tree->order, sizes, lim());
-  BOOST_CHECK_EQUAL(p.grid, pk.plan.grid);
-  BOOST_CHECK_EQUAL(p.bound_block_bytes, pk.plan.bound_block_bytes);
-  BOOST_CHECK_EQUAL(p.toolchain_bytes, pk.plan.toolchain_bytes);
-}
-BOOST_AUTO_TEST_SUITE_END()
 
-BOOST_AUTO_TEST_SUITE(launcher_suite)
-namespace {
-struct launched {
-  kernel_node kn;
-  prepared_kernel pk;
-  tree_store store;
-  std::vector<char> block;
-  launched(std::size_t count = 8) : kn(count) {
-    auto *out = kn.out_holder.get();
-    kn.set_builder([out](kernel_handle &kh) {
-      auto d = kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), [](sg::item<1>) { return 1; });
-      *out = kh.evaluate(d);
-    });
-    kernel_preparer prep(store);
-    pk = prep.prepare(*kn.n, kn.bindings(), lim());
-    block.resize(pk.plan.toolchain_bytes + 64);
-  }
-};
-} // namespace
-BOOST_AUTO_TEST_CASE(one_launch_with_upload_and_fill) {
-  launched l;
-  sgt::mock_ops ops;
-  launcher lc(ops);
-  placement tc;
-  tc.mem.ptr = l.block.data();
-  const op_id k = lc.launch(0, l.pk, l.kn.bindings(), {0x1000}, tc, {42});
-  BOOST_REQUIRE_EQUAL(ops.launches.size(), 1u);
-  BOOST_REQUIRE_EQUAL(ops.copies.size(), 1u);
-  BOOST_REQUIRE_EQUAL(ops.fills.size(), 1u);
-  BOOST_CHECK_EQUAL(ops.copies[0].bytes, l.pk.plan.bound_block_bytes);
-  BOOST_CHECK((ops.copies[0].deps == std::vector<op_id>{42}));
-  BOOST_CHECK((ops.fills[0].deps == std::vector<op_id>{42}));
-  BOOST_CHECK_EQUAL(ops.fills[0].count, l.pk.plan.flag_words);
-  BOOST_CHECK_EQUAL(ops.launches[0].deps.size(), 2u);
-  BOOST_CHECK_EQUAL(ops.launches[0].desc.groups, l.pk.plan.grid);
-  BOOST_CHECK_EQUAL(ops.launches[0].desc.work_group_size, l.pk.plan.work_group_size);
-  BOOST_CHECK_EQUAL(ops.launches[0].desc.local_bytes, l.pk.plan.local_bytes);
-  BOOST_CHECK(ops.launches[0].desc.config == l.pk.tree->config.get());
-  BOOST_CHECK_EQUAL(k, ops.next);
-  lc.release_finished();
+BOOST_AUTO_TEST_CASE(host_and_kernel_nodes_of_one_graph_order_by_role) {
+  rig r;
+  auto x = r.g->create_mem_handle<float>();
+  auto n = r.g->create_mem_handle<int>();
+  auto y = r.g->create_mem_handle<float>();
+  host_write(*r.g, n, std::vector<int>{64});
+  host_write(*r.g, x, iota_f(64));
+  r.g->submit(sycl::device{}, [&](sg::kernel_handle &kh) { rerun_a(kh, x, n, y); });
+  std::vector<float> out;
+  host_read(*r.g, y, 64, out);
+  r.g->run();
+  // host reads y after the kernel's launch (the last operation before it)
+  BOOST_REQUIRE_EQUAL(r.ops->hosts.size(), 3u);
+  const auto launch_id = r.ops->next - 1; // the host read comes after the launch
+  const auto &read_deps = r.ops->hosts.back().deps;
+  BOOST_CHECK(std::find(read_deps.begin(), read_deps.end(), launch_id) != read_deps.end());
 }
-BOOST_AUTO_TEST_CASE(grid_zero_is_a_host_task) {
-  kernel_node kn(0);
-  kn.set_builder([out = kn.out_holder.get()](kernel_handle &kh) {
-    auto d = kh.parallel_for(sycl::range<1>(0), sycl::range<1>(4), [](sg::item<1>) { return 1; });
-    *out = kh.evaluate(d);
-  });
-  tree_store store;
-  kernel_preparer prep(store);
-  auto pk = prep.prepare(*kn.n, kn.bindings(0), lim());
-  sgt::mock_ops ops;
-  launcher lc(ops);
-  placement tc;
-  lc.launch(0, pk, kn.bindings(0), {0x1000}, tc, {5});
-  BOOST_CHECK_EQUAL(ops.launches.size(), 0u);
-  BOOST_CHECK_EQUAL(ops.hosts.size(), 1u);
-  BOOST_CHECK((ops.hosts[0].deps == std::vector<op_id>{5}));
-}
-BOOST_AUTO_TEST_SUITE_END()
 
-BOOST_AUTO_TEST_SUITE(graph_impl_suite)
-namespace {
-struct submitter {
-  sgt::rig r;
-  sycl::device dev;
-  void host(std::function<void(node_record &)> arrays, std::function<void()> fn = [] {}) {
-    node_record &n = r.impl->begin_scope(dev);
-    arrays(n);
-    n.kind = node_record::kind_t::host_work;
-    n.host_fn = fn;
-    ++n.defines;
-    r.impl->end_scope();
-  }
-  mem_handle<int> handle() {
-    return handle_access::make<mem_handle<int>>(r.impl.get(), r.impl->add_handle(type_id<int>(), 4));
-  }
-};
-} // namespace
-BOOST_AUTO_TEST_CASE(submit_calls_nothing) {
-  submitter s;
-  auto h = s.handle();
-  s.host([&](node_record &) { array<result<int>, 1> a(h, shape<1>(sycl::range<1>(4))); });
-  BOOST_CHECK(s.r.mem->log.empty());
-  BOOST_CHECK(s.r.ops->log.empty());
-  BOOST_CHECK_EQUAL(s.r.prep->calls, 0);
-}
-BOOST_AUTO_TEST_CASE(scope_misuse) {
-  submitter s;
-  s.r.impl->begin_scope(s.dev);
-  SG_CHECK_ERRC(s.r.impl->begin_scope(s.dev), builder_misuse);
-  SG_CHECK_ERRC(s.r.impl->end_scope(), builder_misuse); // no define
-  submitter t;
-  node_record &n = t.r.impl->begin_scope(t.dev);
-  n.defines = 2;
-  SG_CHECK_ERRC(t.r.impl->end_scope(), builder_misuse);
-}
-BOOST_AUTO_TEST_CASE(run_in_order_and_clear) {
-  submitter s;
-  auto h = s.handle();
-  int order = 0, a = 0, b = 0;
-  s.host([&](node_record &) { array<result<int>, 1> x(h, shape<1>(sycl::range<1>(4))); }, [&] { a = ++order; });
-  s.host([&](node_record &) { array<int, 1> x(h, shape<1>(sycl::range<1>(4))); }, [&] { b = ++order; });
-  s.r.impl->run();
-  BOOST_CHECK_EQUAL(a, 1);
-  BOOST_CHECK_EQUAL(b, 2);
-  BOOST_CHECK_EQUAL(s.r.ops->hosts.size(), 2u);
-  BOOST_CHECK((s.r.ops->hosts[1].deps == std::vector<op_id>{1}));
-  s.r.impl->run();
-  BOOST_CHECK_EQUAL(s.r.ops->hosts.size(), 2u);
-}
-BOOST_AUTO_TEST_CASE(check_failure_after_earlier_nodes) {
-  submitter s;
-  auto h = s.handle(), g = s.handle();
-  s.host([&](node_record &) { array<result<int>, 1> x(h, shape<1>(sycl::range<1>(4))); });
-  s.host([&](node_record &) { array<int, 1> x(g, shape<1>(sycl::range<1>(4))); });
-  SG_CHECK_ERRC(s.r.impl->run(), never_produced);
-  BOOST_CHECK_EQUAL(s.r.ops->hosts.size(), 1u);
-  s.r.impl->run();
-  BOOST_CHECK_EQUAL(s.r.ops->hosts.size(), 1u);
-}
-BOOST_AUTO_TEST_CASE(memory_calls_and_commit_order) {
-  submitter s;
-  auto h = s.handle();
-  s.host([&](node_record &) { array<result<int>, 1> x(h, shape<1>(sycl::range<1>(4))); });
-  s.host([&](node_record &) { array<int, 1> x(h, shape<1>(sycl::range<1>(4))); });
-  s.r.impl->run();
-  const auto &log = s.r.mem->log;
-  BOOST_REQUIRE(log.size() >= 5);
-  BOOST_CHECK_EQUAL(log[0], "for_producer 0");
-  const auto use = std::find(log.begin(), log.end(), "note_use 0 1");
-  const auto prod = std::find(log.begin(), log.end(), "note_produced 0 1");
-  BOOST_CHECK(use != log.end() && prod != log.end() && use < prod);
-  BOOST_CHECK(std::find(log.begin(), log.end(), "for_reader 0") != log.end());
-}
-BOOST_AUTO_TEST_CASE(migration_copies_then_commits) {
-  submitter s;
-  auto h = s.handle();
-  s.host([&](node_record &) { array<result<int>, 1> x(h, shape<1>(sycl::range<1>(4))); });
-  s.host([&](node_record &) { array<int, 1> x(h, shape<1>(sycl::range<1>(4))); });
+BOOST_AUTO_TEST_CASE(a_staged_copy_chains_its_legs_and_the_buffer_outlives_the_copies) {
+  rig r;
+  auto x = r.g->create_mem_handle<float>();
+  auto total = r.g->create_mem_handle<float>();
+  host_write(*r.g, x, iota_f(64));
+  r.g->submit(sycl::device{}, [&](sg::kernel_handle &kh) { k1(kh, x, total); });
   migration m;
-  m.plan.kind = copy_kind::direct;
-  m.plan.steps.push_back({place{0, 1}, place{1, 1}, interval{0, 16}, 1});
-  m.from.ptr = s.r.mem->arena.data();
-  m.to.ptr = s.r.mem->arena.data() + 8192;
-  s.r.mem->forced_migration[0] = m;
-  s.r.impl->run();
-  BOOST_REQUIRE_EQUAL(s.r.ops->copies.size(), 1u);
-  BOOST_CHECK_EQUAL(s.r.ops->copies[0].dev, 1);
-  const auto &log = s.r.mem->log;
-  BOOST_CHECK(std::find(log.begin(), log.end(), "commit_migration 0") != log.end());
+  m.plan = plan_copy(place{0, 1}, place{2, 2}, interval{0, 256});
+  BOOST_REQUIRE(m.plan.kind == copy_kind::staged_via_host);
+  m.from.ptr = r.mem->arena.base;
+  m.to.ptr = r.mem->arena.base + 4096;
+  r.mem->forced_migration[0] = m;
+  r.g->run();
+  BOOST_REQUIRE_GE(r.ops->copies.size(), 3u);
+  // down leg, up leg waiting on the down leg
+  const auto &down = r.ops->copies[0];
+  const auto &up = r.ops->copies[1];
+  BOOST_CHECK(up.src == down.dst);
+  BOOST_CHECK(std::find(up.deps.begin(), up.deps.end(), down.id) != up.deps.end());
+  // the staging buffer is released only after the queue has drained
+  r.g->wait();
+  BOOST_CHECK_EQUAL(r.mem->released, 1);
+  BOOST_CHECK_EQUAL(r.mem->wait_alls_at_release, 1);
 }
-BOOST_AUTO_TEST_CASE(fill_for_inplace_value) {
-  submitter s;
-  auto h = s.handle();
-  s.host([&](node_record &) {
-    array<result<int>, 1> x(inplace(h, sycl::plus<>{}, 3), shape<1>(sycl::range<1>(1)));
-  });
-  s.r.impl->run();
-  BOOST_REQUIRE_EQUAL(s.r.ops->fills.size(), 1u);
-  BOOST_CHECK_EQUAL(s.r.ops->fills[0].count, 1u);
-  BOOST_CHECK_EQUAL(s.r.ops->fills[0].pattern.size(), 4u);
-}
-BOOST_AUTO_TEST_CASE(kernel_node_flow) {
-  submitter s;
-  auto h = s.handle();
-  node_record &n = s.r.impl->begin_scope(s.dev);
-  array<result<int>, 1> x(h, shape<1>(sycl::range<1>(4)));
-  n.kind = node_record::kind_t::kernel;
-  n.builder = [](kernel_handle &) {};
-  ++n.defines;
-  s.r.impl->end_scope();
-  s.r.impl->run();
-  BOOST_CHECK_EQUAL(s.r.prep->calls, 1);
-  BOOST_CHECK_EQUAL(s.r.launch->deps.size(), 1u);
-  const auto &log = s.r.mem->log;
-  const auto acq = std::find(log.begin(), log.end(), "acquire_toolchain");
-  const auto rel = std::find_if(log.begin(), log.end(), [](const std::string &l) { return l.rfind("release_toolchain", 0) == 0; });
-  BOOST_CHECK(acq != log.end() && rel != log.end() && acq < rel);
-  BOOST_CHECK_EQUAL(s.r.prep->seen[0][0].extent[0], 4u);
-}
-BOOST_AUTO_TEST_CASE(futures) {
-  submitter s;
-  auto h = s.handle();
-  graph_promise<int> prom;
-  auto st = std::make_shared<promise_state<int>>();
-  const auto pi = s.r.impl->add_promise(st, [st] { return st->is_set(); });
-  s.host([&](node_record &) { array<result<int>, 1> x(h, shape<1>(sycl::range<1>(6))); }, [st] { st->set(6); });
-  s.host(
-      [&](node_record &n) {
-        n.futures_read.push_back(pi);
-        array<int, 1> x(h, shape<1>({dim(launch_value<int>(st, 0))}));
-      },
-      [] {});
-  s.r.impl->run();
-  BOOST_CHECK(st->is_set());
-  BOOST_CHECK_EQUAL(s.r.ops->hosts.size(), 2u);
-  // never set
-  submitter t;
-  auto st2 = std::make_shared<promise_state<int>>();
-  const auto pj = t.r.impl->add_promise(st2, [st2] { return st2->is_set(); });
-  t.host([&](node_record &n) { n.futures_read.push_back(pj); });
-  SG_CHECK_ERRC(t.r.impl->run(), future_unset);
-}
-BOOST_AUTO_TEST_CASE(host_table_filled_before_host_task) {
-  submitter s;
-  auto h = s.handle();
-  bool seen = false;
-  std::shared_ptr<host_array<int, 1>> ha;
-  s.host(
-      [&](node_record &) { ha = std::make_shared<host_array<int, 1>>(h, shape<1>(sycl::range<1>(4))); },
-      [&] { seen = ha->data() != nullptr && ha->range()[0] == 4; });
-  s.r.impl->run();
-  BOOST_CHECK(seen);
-}
-BOOST_AUTO_TEST_CASE(wait_calls) {
-  submitter s;
-  s.r.impl->wait();
-  BOOST_CHECK_EQUAL(s.r.ops->wait_all_calls, 1);
-  BOOST_CHECK_EQUAL(s.r.launch->released, 1);
-  BOOST_CHECK_EQUAL(s.r.mem->released, 1);
-}
+
 BOOST_AUTO_TEST_SUITE_END()
 
-BOOST_AUTO_TEST_SUITE(composition_adaptivity_suite)
+BOOST_AUTO_TEST_SUITE(tile_order)
+
+BOOST_AUTO_TEST_CASE(k1_orders_levels_after_their_producers) {
+  rig r;
+  auto x = r.g->create_mem_handle<float>(), total = r.g->create_mem_handle<float>();
+  submit_kernel(r, [&](sg::kernel_handle &kh) { k1(kh, x, total); });
+  auto pk = prep(r);
+  const tile_graph tg = build_tile_graph(*pk);
+  BOOST_CHECK(order_is_valid(tg));
+  // the level-3 task of tile 15 runs in the group of level-1 tile 15 after its level-2 task
+  int l3 = -1;
+  for (std::size_t i = 0; i < tg.tasks.size(); ++i)
+    if (tg.tasks[i].map == 2)
+      l3 = static_cast<int>(i);
+  BOOST_REQUIRE_GE(l3, 0);
+  for (int t : {3, 7, 11})
+    for (std::size_t i = 0; i < tg.tasks.size(); ++i)
+      if (tg.tasks[i].map == 1 && tg.tasks[i].tile == t / 4)
+        BOOST_CHECK_LE(ticket_of(tg, static_cast<int>(i)), ticket_of(tg, l3));
+}
+
+BOOST_AUTO_TEST_CASE(k5_runs_the_producing_set_before_the_gathering_set) {
+  rig r;
+  auto s = r.g->create_mem_handle<int>(), idx = r.g->create_mem_handle<int>(), y = r.g->create_mem_handle<int>();
+  submit_kernel(r, [&](sg::kernel_handle &kh) { k5(kh, s, idx, y); });
+  auto pk = prep(r);
+  const tile_graph tg = build_tile_graph(*pk);
+  BOOST_CHECK(order_is_valid(tg));
+  int latest_src = -1, earliest_y = 1 << 30;
+  for (std::size_t g = 0; g < tg.groups.size(); ++g) {
+    if (tg.groups[g].work == 0)
+      latest_src = std::max(latest_src, tg.ticket_of_group[g]);
+    else
+      earliest_y = std::min(earliest_y, tg.ticket_of_group[g]);
+  }
+  BOOST_CHECK_LT(latest_src, earliest_y);
+}
+
+BOOST_AUTO_TEST_CASE(a_gather_on_its_own_set_is_a_cycle_and_names_the_tiles) {
+  rig r;
+  auto s = r.g->create_mem_handle<int>(), idx = r.g->create_mem_handle<int>(), y = r.g->create_mem_handle<int>();
+  submit_kernel(r, [&](sg::kernel_handle &kh) { k5(kh, s, idx, y, true); });
+  auto pk = prep(r);
+  try {
+    build_tile_graph(*pk);
+    BOOST_FAIL("no throw");
+  } catch (const sg::error &e) {
+    const std::string w = e.what();
+    BOOST_CHECK(w.find("kh.index_map") != std::string::npos);
+    for (int t = 0; t < 4; ++t)
+      BOOST_CHECK(w.find("work set 0 tile " + std::to_string(t)) != std::string::npos);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(k7_last_tile_follows_all_others) {
+  rig r;
+  auto v = r.g->create_mem_handle<int>(), h = r.g->create_mem_handle<int>();
+  submit_kernel(r, [&](sg::kernel_handle &kh) { k7(kh, v, h); });
+  auto pk = prep(r);
+  const tile_graph tg = build_tile_graph(*pk);
+  BOOST_CHECK(order_is_valid(tg));
+  const int last = tg.ticket_of_group[15];
+  for (int g = 0; g < 15; ++g)
+    BOOST_CHECK_LT(tg.ticket_of_group[g], last);
+}
+
+BOOST_AUTO_TEST_CASE(the_order_is_the_same_for_every_build) {
+  rig r;
+  auto x = r.g->create_mem_handle<float>(), total = r.g->create_mem_handle<float>();
+  submit_kernel(r, [&](sg::kernel_handle &kh) { k1(kh, x, total); });
+  auto pk = prep(r);
+  const std::vector<int> first = build_tile_graph(*pk).group_of_ticket;
+  for (int i = 0; i < 100; ++i)
+    BOOST_REQUIRE(build_tile_graph(*pk).group_of_ticket == first);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(bound_block)
+
 namespace {
-hipsycl::glue::sscp::composition_config cfg(std::uint64_t hash) {
-  hipsycl::glue::sscp::composition_config c;
-  c.unique_hash = hash;
-  return c;
+
+struct case_k {
+  std::string name;
+  std::function<void(rig &)> build;
+  std::vector<std::int64_t> values;
+};
+
+std::vector<case_k> all_kernels() {
+  std::vector<case_k> v;
+  auto f = [](rig &r) { return r.g->create_mem_handle<float>(); };
+  auto i = [](rig &r) { return r.g->create_mem_handle<int>(); };
+  auto sub = [](rig &r, auto fn) { r.g->submit(sycl::device{}, [&](sg::kernel_handle &kh) { fn(kh); }); };
+  v.push_back({"k1", [=](rig &r) { auto a = f(r), b = f(r); sub(r, [&](auto &kh) { k1(kh, a, b); }); }, {}});
+  v.push_back({"k2", [=](rig &r) { auto a = f(r), b = f(r); auto n = i(r), d = i(r); sub(r, [&](auto &kh) { k2(kh, a, n, d, b); }); }, {64, 3}});
+  v.push_back({"k3", [=](rig &r) { auto a = i(r), b = i(r); sub(r, [&](auto &kh) { k3(kh, a, b); }); }, {}});
+  v.push_back({"k4", [=](rig &r) { auto a = i(r), b = i(r); sub(r, [&](auto &kh) { k4(kh, a, b); }); }, {}});
+  v.push_back({"k5", [=](rig &r) { auto a = i(r), b = i(r), c = i(r); sub(r, [&](auto &kh) { k5(kh, a, b, c); }); }, {}});
+  v.push_back({"k6", [=](rig &r) { auto a = i(r), b = i(r), c = i(r); sub(r, [&](auto &kh) { k6(kh, a, b, c, false); }); }, {}});
+  v.push_back({"k7", [=](rig &r) { auto a = i(r), b = i(r); sub(r, [&](auto &kh) { k7(kh, a, b); }); }, {}});
+  v.push_back({"k8", [=](rig &r) { auto a = i(r), b = i(r), c = i(r), d = i(r), e = i(r); sub(r, [&](auto &kh) { k8(kh, a, b, c, d, e); }); }, {}});
+  v.push_back({"k9", [=](rig &r) { auto a = f(r), b = f(r); sub(r, [&](auto &kh) { k9(kh, a, b); }); }, {}});
+  v.push_back({"k10", [=](rig &r) { auto a = f(r), b = f(r); sub(r, [&](auto &kh) { k10(kh, a, b, 2.f, 1.f, 256); }); }, {}});
+  v.push_back({"k11", [=](rig &r) { auto a = f(r), b = f(r); sub(r, [&](auto &kh) { k11(kh, a, b, 1.f); }); }, {}});
+  v.push_back({"k12", [=](rig &r) { auto a = f(r), c = f(r), d = f(r); auto b = i(r); sub(r, [&](auto &kh) { k12(kh, a, b, c, d); }); }, {}});
+  v.push_back({"k13", [=](rig &r) { auto a = f(r), b = f(r); sub(r, [&](auto &kh) { k13(kh, a, b); }); }, {}});
+  v.push_back({"k14", [=](rig &r) { auto a = i(r), b = i(r); sub(r, [&](auto &kh) { k14(kh, a, b, false); }); }, {}});
+  return v;
 }
-hipsycl::rt::kernel_configuration make(const hipsycl::glue::sscp::composition_config *c, int index = 0) {
-  hipsycl::rt::kernel_configuration k;
-  if (c)
-    hipsycl::rt::configure_composition_kernel(k, index, {c}, "kern", 1024);
-  return k;
-}
+
 } // namespace
-BOOST_AUTO_TEST_CASE(ids) {
-  const auto a = cfg(1), a2 = cfg(1), b = cfg(2);
-  BOOST_CHECK(make(&a).generate_id() == make(&a2).generate_id());
-  BOOST_CHECK(make(&a).generate_id() != make(&b).generate_id());
-  BOOST_CHECK(make(&a, 0).generate_id() != make(&a, 1).generate_id());
-  BOOST_CHECK(make(&a).generate_id() != make(nullptr).generate_id());
-  BOOST_CHECK(make(nullptr).generate_id() == hipsycl::rt::kernel_configuration{}.generate_id());
+
+BOOST_AUTO_TEST_CASE(every_kernel_encodes_and_decodes_to_the_same_task_lists) {
+  for (const case_k &k : all_kernels()) {
+    rig r;
+    k.build(r);
+    auto pk = prep(r, k.values);
+    tile_graph tg = build_tile_graph(*pk);
+    const launch_plan lp = encode_launch(*pk, tg, std::vector<slot_binding>(8), 0, device_limits{});
+    const dev::block_t b = lp.block.data();
+    const dev::block_header &h = dev::header_of(b);
+    BOOST_REQUIRE_MESSAGE(h.magic == dev::block_magic, k.name);
+    BOOST_CHECK_MESSAGE(h.n_tickets == tg.groups.size(), k.name);
+    BOOST_CHECK_MESSAGE(h.n_tasks == tg.tasks.size(), k.name);
+    std::uint32_t seen = 0;
+    for (std::uint32_t t = 0; t < h.n_tickets; ++t) {
+      const dev::ticket_rec &tr = dev::tickets_of(b)[t];
+      const auto &expect = tg.group_tasks[tg.group_of_ticket[t]];
+      BOOST_REQUIRE_MESSAGE(tr.n_tasks == expect.size(), k.name);
+      for (std::uint32_t i = 0; i < tr.n_tasks; ++i, ++seen) {
+        const dev::task_rec &d = dev::tasks_of(b)[tr.first_task + i];
+        const task_inst &e = tg.tasks[expect[i]];
+        BOOST_CHECK_EQUAL(d.flag, e.flag);
+        BOOST_CHECK_EQUAL(d.n_waits, e.waits.size());
+        for (std::uint32_t w = 0; w < d.n_waits; ++w)
+          BOOST_CHECK_EQUAL(dev::waits_of(b)[d.first_wait + w], e.waits[w]);
+        const map_conc &mc = pk->maps[e.map];
+        BOOST_CHECK_EQUAL(d.n_units, mc.units);
+        for (std::int64_t u = 0; u < mc.units; ++u)
+          for (std::size_t j = 0; j < mc.n_inputs; ++j) {
+            const dev::sel_rec &s = dev::sels_of(b)[d.first_sel + u * mc.n_inputs + j];
+            BOOST_REQUIRE_EQUAL(s.view, mc.sel(e.tile, u, j).view);
+            BOOST_REQUIRE_EQUAL(s.tile, mc.sel(e.tile, u, j).tile);
+            BOOST_REQUIRE_EQUAL(s.len, mc.sel(e.tile, u, j).len);
+          }
+      }
+    }
+    BOOST_CHECK_MESSAGE(seen == h.n_tasks, k.name);
+    // every section starts on a 16-byte boundary and every record size is a multiple of 8
+    for (std::uint64_t off : {h.off_tickets, h.off_tasks, h.off_waits, h.off_copies, h.off_views, h.off_sels,
+                              h.off_item_tasks, h.off_closures, h.off_tables})
+      BOOST_CHECK_MESSAGE(off % 16 == 0, k.name);
+    BOOST_CHECK_EQUAL(lp.block.size() % 256, 0u);
+    if (lp.items) {
+      BOOST_CHECK_MESSAGE(h.n_item_tasks > 0, k.name);
+      BOOST_CHECK_EQUAL(h.n_items, static_cast<std::uint64_t>(pk->n_items));
+    }
+  }
 }
-BOOST_AUTO_TEST_CASE(sets_only_composition_state) {
-  const auto a = cfg(7);
-  auto k = make(&a);
-  BOOST_REQUIRE_EQUAL(k.get_composition_configs().size(), 1u);
-  BOOST_CHECK_EQUAL(k.get_composition_configs()[0].value->unique_hash, 7u);
+
+BOOST_AUTO_TEST_CASE(sub_word_fields_are_naturally_aligned) {
+  static_assert(offsetof(dev::task_rec, closure) % 8 == 0);
+  static_assert(offsetof(dev::task_rec, run_len) % 8 == 0);
+  static_assert(offsetof(dev::task_rec, out_global) % 8 == 0);
+  static_assert(offsetof(dev::task_rec, eval_addr) % 8 == 0);
+  static_assert(offsetof(dev::sel_rec, off) % 8 == 0);
+  static_assert(offsetof(dev::copy_rec, elems) % 8 == 0);
+  static_assert(offsetof(dev::item_task_rec, closure) % 8 == 0);
+  static_assert(offsetof(dev::item_input_rec, off) % 8 == 0);
+  static_assert(offsetof(dev::block_header, flags) % 8 == 0);
+  BOOST_CHECK(true);
 }
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(runs)
+
+namespace {
+// two independent map groups: one of fixed size, one whose grid follows the launch value n
+struct two_parts {
+  rig r;
+  int run_number = 0;
+  sg::mem_handle<int> n, n_w;
+  sg::mem_handle<float> a, b, ya, yb;
+  two_parts() {
+    n = r.g->create_mem_handle<int>();
+    a = r.g->create_mem_handle<float>();
+    b = r.g->create_mem_handle<float>();
+    ya = r.g->create_mem_handle<float>();
+    yb = r.g->create_mem_handle<float>();
+    r.g->submit<sg::host>([&](sg::host_handle &hh) {
+      auto w = hh.write(n, sg::shape<1>({1}));
+      hh.run([w, this] { w.data()[0] = run_number == 0 ? 64 : 128; });
+    });
+    host_write(*r.g, a, iota_f(64));
+    host_write(*r.g, b, iota_f(128));
+    r.g->submit(sycl::device{}, [&](sg::kernel_handle &kh) {
+      auto nv = kh.launch_value(n);
+      auto xa = kh.source(a, sg::shape<1>({64}));
+      auto ta = kh.tile(xa, {4});
+      auto wa = kh.work_tiles({16}, {1}, 4);
+      auto la = sum_tiles(kh, wa, ta);
+      kh.evaluate(ya, kh.join(la));
+      auto xb = kh.source(b, sg::shape<1>({128}));
+      auto tb = kh.tile(xb, {4});
+      auto wb = kh.work_tiles({nv / 4}, {1}, 4);
+      auto lb = sum_tiles(kh, wb, tb);
+      kh.evaluate(yb, kh.join(lb));
+    });
+  }
+};
+} // namespace
+
+BOOST_AUTO_TEST_CASE(a_second_run_with_the_same_values_prepares_and_composes_nothing) {
+  two_parts t;
+  t.r.g->run();
+  const auto first = t.r.g->stats();
+  BOOST_CHECK_EQUAL(first.prepares, 1u);
+  BOOST_CHECK_EQUAL(first.compositions, 1u);
+  BOOST_CHECK_EQUAL(first.unit_bodies, 16u + 16u);
+  t.r.g->run();
+  const auto second = t.r.g->stats();
+  BOOST_CHECK_EQUAL(second.unit_bodies, first.unit_bodies);
+  BOOST_CHECK_EQUAL(second.compositions, first.compositions);
+  BOOST_CHECK_EQUAL(second.launches, 2u);
+}
+
+BOOST_AUTO_TEST_CASE(a_changed_launch_value_evaluates_only_the_bodies_that_read_it) {
+  two_parts t;
+  t.r.g->run();
+  const std::size_t before = t.r.g->stats().unit_bodies;
+  t.run_number = 1;
+  t.r.g->run();
+  // the fixed map keeps its units; the map over n is evaluated again for 128 / 4 tiles
+  BOOST_CHECK_EQUAL(t.r.g->stats().unit_bodies - before, 32u);
+  BOOST_CHECK_EQUAL(t.r.g->stats().compositions, 1u);
+}
+
+BOOST_AUTO_TEST_CASE(the_launch_value_is_read_after_its_producer_and_the_flags_are_cleared_before_every_launch) {
+  two_parts t;
+  t.r.g->run();
+  t.r.g->run();
+  const auto &log = t.r.ops->log;
+  const auto host = std::find(log.begin(), log.end(), "host_task");
+  const auto wait = std::find(log.begin(), log.end(), "wait");
+  const auto launch = std::find(log.begin(), log.end(), "launch");
+  BOOST_REQUIRE(host != log.end() && wait != log.end() && launch != log.end());
+  BOOST_CHECK(host < wait && wait < launch);
+  BOOST_REQUIRE_EQUAL(t.r.ops->launches.size(), 2u);
+  BOOST_REQUIRE_EQUAL(t.r.ops->fills.size(), 2u);
+  for (std::size_t i = 0; i < 2; ++i) {
+    const auto &fill = t.r.ops->fills[i];
+    BOOST_CHECK_EQUAL(fill.count, t.r.launch->plans[i].flag_words);
+    BOOST_CHECK(std::all_of(fill.pattern.begin(), fill.pattern.end(), [](std::byte b) { return b == std::byte{0}; }));
+    // the launch waits for the flag fill
+    const auto &deps = t.r.ops->launches[i].deps;
+    BOOST_CHECK(!deps.empty());
+  }
+  BOOST_CHECK(t.r.launch->configs[0] == t.r.launch->configs[1]);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
