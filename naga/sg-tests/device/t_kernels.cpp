@@ -1,406 +1,441 @@
-#include "common.hpp"
+#include "../common/check.hpp"
+#include "../common/graphs.hpp"
 
-#include <algorithm>
+#include <cstdint>
+#include <string>
+#include <vector>
 
 using namespace sgt;
 
 namespace {
-struct S16 {
-  std::int64_t a, b;
-  bool operator==(const S16 &o) const { return a == o.a && b == o.b; }
-};
-struct S512 {
-  std::int32_t v[128];
-  bool operator==(const S512 &o) const { return std::equal(v, v + 128, o.v); }
-};
+
+int max_group() { return static_cast<int>(test_device().get_info<sycl::info::device::max_work_group_size>()); }
+
+// a kernel of 1024 items per group needs a device that allows it
+bool group_of_1024_fits() {
+  if (max_group() >= 1024)
+    return true;
+  BOOST_TEST_MESSAGE("SKIPPED: the device's largest work-group is " << max_group() << ", the kernel needs 1024");
+  return false;
+}
+
+template <class T> H<T> input(sg::graph &g, const std::vector<T> &v) {
+  auto h = g.create_mem_handle<T>();
+  host_write(g, h, v);
+  return h;
+}
+
+template <class T> void same(const std::vector<T> &got, const std::vector<T> &want) {
+  BOOST_REQUIRE_EQUAL(got.size(), want.size());
+  for (std::size_t i = 0; i < want.size(); ++i)
+    BOOST_REQUIRE_MESSAGE(got[i] == want[i], "element " << i << ": got " << got[i] << ", want " << want[i]);
+}
+
+std::vector<float> run_k1(const std::vector<float> &x) {
+  sg::graph g;
+  auto in = input(g, x);
+  auto total = g.create_mem_handle<float>();
+  g.submit(test_device(), [&](sg::kernel_handle &kh) { k1(kh, in, total); });
+  std::vector<float> out;
+  host_read(g, total, 1, out);
+  g.run();
+  g.wait();
+  return out;
+}
+
+std::vector<float> run_k2(int depth) {
+  int n = 1;
+  for (int i = 0; i < depth; ++i)
+    n *= 4;
+  sg::graph g;
+  auto x = input(g, std::vector<float>(n, 1.f));
+  auto nh = input(g, std::vector<int>{n});
+  auto dh = input(g, std::vector<int>{depth});
+  auto total = g.create_mem_handle<float>();
+  g.submit(test_device(), [&](sg::kernel_handle &kh) { k2(kh, x, nh, dh, total); });
+  std::vector<float> out;
+  host_read(g, total, 1, out);
+  g.run();
+  g.wait();
+  return out;
+}
+
+std::vector<int> run_k6(bool segmented) {
+  std::vector<int> a(128 * 128), b(128 * 128);
+  for (int i = 0; i < 128; ++i)
+    for (int k = 0; k < 128; ++k) {
+      a[i * 128 + k] = i;
+      b[i * 128 + k] = k;
+    }
+  sg::graph g;
+  auto ah = input(g, a);
+  auto bh = input(g, b);
+  auto ch = g.create_mem_handle<int>();
+  g.submit(test_device(), [&](sg::kernel_handle &kh) { k6(kh, ah, bh, ch, segmented); });
+  std::vector<int> out;
+  host_read(g, ch, 128 * 128, out);
+  g.run();
+  g.wait();
+  return out;
+}
+
+std::vector<int> run_k14(int cap, bool segmented) {
+  std::vector<int> x(64 * 1024);
+  for (int r = 0; r < 64; ++r)
+    for (int c = 0; c < 1024; ++c)
+      x[r * 1024 + c] = r + c;
+  sg::graph_options o;
+  o.group_size_cap = cap;
+  sg::graph g(o);
+  auto xh = input(g, x);
+  auto yh = g.create_mem_handle<int>();
+  g.submit(test_device(), [&](sg::kernel_handle &kh) { k14(kh, xh, yh, segmented); });
+  std::vector<int> out;
+  host_read(g, yh, 64, out);
+  g.run();
+  g.wait();
+  return out;
+}
+
+std::vector<float> run_k10(float a, float b, int n, bool tiled) {
+  sg::graph g;
+  auto x = input(g, iota_f(n));
+  auto y = g.create_mem_handle<float>();
+  g.submit(test_device(), [&](sg::kernel_handle &kh) {
+    if (tiled)
+      k10_tiled(kh, x, y, a, b, n);
+    else
+      k10(kh, x, y, a, b, n);
+  });
+  std::vector<float> out;
+  host_read(g, y, n, out);
+  g.run();
+  g.wait();
+  return out;
+}
+
 } // namespace
 
-BOOST_AUTO_TEST_SUITE(item_kernels)
+BOOST_AUTO_TEST_SUITE(kernels)
 
-BOOST_AUTO_TEST_CASE(rank1_group_shapes) {
-  for (std::size_t gs : {1u, 4u, 16u, 32u}) {
-    const auto got = run_one<int, 1>(sycl::range<1>(32), [gs](sg::kernel_handle &kh) {
-      return kh.parallel_for(sycl::range<1>(32), sycl::range<1>(gs),
-                             [](sg::item<1> it) { return int(it.id()[0]) * 2; });
-    });
-    for (int i = 0; i < 32; ++i)
-      BOOST_REQUIRE_EQUAL(got[i], 2 * i);
+BOOST_AUTO_TEST_CASE(k01_global_reduction_of_i) {
+  const auto got = run_k1(iota_f(64));
+  same(got, std::vector<float>{2016.f});
+}
+
+BOOST_AUTO_TEST_CASE(k01_global_reduction_of_i_plus_1) {
+  const auto got = run_k1(iota_f(64, 1.f));
+  same(got, std::vector<float>{2080.f});
+}
+
+BOOST_AUTO_TEST_CASE(k02_depth_3_over_64_ones) { same(run_k2(3), std::vector<float>{64.f}); }
+
+BOOST_AUTO_TEST_CASE(k02_depth_5_over_1024_ones) { same(run_k2(5), std::vector<float>{1024.f}); }
+
+BOOST_AUTO_TEST_CASE(k03_inclusive_scan_of_1024_ones) {
+  const auto got = run_kernel<int, int>(std::vector<int>(1024, 1), 1024,
+                                        [](auto &kh, auto x, auto y) { k3(kh, x, y); });
+  std::vector<int> want(1024);
+  for (int k = 0; k < 1024; ++k)
+    want[k] = k + 1;
+  same(got, want);
+}
+
+BOOST_AUTO_TEST_CASE(k04_three_point_stencil) {
+  const auto x = iota_i(1024);
+  const auto got = run_kernel<int, int>(x, 1024, [](auto &kh, auto in, auto y) { k4(kh, in, y); });
+  std::vector<int> want(1024);
+  for (int i = 0; i < 1024; ++i)
+    want[i] = (i > 0 ? x[i - 1] : 0) + x[i] + (i < 1023 ? x[i + 1] : 0);
+  same(got, want);
+  BOOST_CHECK_EQUAL(got[0], 1);
+  BOOST_CHECK_EQUAL(got[1023], 2045);
+}
+
+BOOST_AUTO_TEST_CASE(k05_gather_from_values_computed_in_the_kernel) {
+  std::vector<int> idx(256);
+  for (int i = 0; i < 256; ++i)
+    idx[i] = (7 * i) % 256;
+  sg::graph g;
+  auto s = input(g, iota_i(256));
+  auto ix = input(g, idx);
+  auto y = g.create_mem_handle<int>();
+  g.submit(test_device(), [&](sg::kernel_handle &kh) { k5(kh, s, ix, y); });
+  std::vector<int> out;
+  host_read(g, y, 256, out);
+  g.run();
+  g.wait();
+  std::vector<int> want(256);
+  for (int i = 0; i < 256; ++i)
+    want[i] = 2 * ((7 * i) % 256);
+  same(out, want);
+  BOOST_CHECK_EQUAL(out[1], 14);
+  BOOST_CHECK_EQUAL(out[37], 6);
+}
+
+BOOST_AUTO_TEST_CASE(k06_matrix_product_at_cap_1024) {
+  if (!group_of_1024_fits())
+    return;
+  const auto got = run_k6(false);
+  std::vector<int> want(128 * 128);
+  for (int i = 0; i < 128; ++i)
+    for (int j = 0; j < 128; ++j)
+      want[i * 128 + j] = 128 * i * j;
+  same(got, want);
+  BOOST_CHECK_EQUAL(got[3 * 128 + 5], 1920);
+  BOOST_CHECK_EQUAL(got[127 * 128 + 127], 2064512);
+}
+
+BOOST_AUTO_TEST_CASE(k06_matrix_product_segmented) {
+  if (!group_of_1024_fits())
+    return;
+  const auto got = run_k6(true);
+  std::vector<int> want(128 * 128);
+  for (int i = 0; i < 128; ++i)
+    for (int j = 0; j < 128; ++j)
+      want[i * 128 + j] = 128 * i * j;
+  same(got, want);
+}
+
+BOOST_AUTO_TEST_CASE(k07_histogram_of_4096_values) {
+  std::vector<int> v(4096);
+  for (int i = 0; i < 4096; ++i)
+    v[i] = i % 16;
+  const auto got = run_kernel<int, int>(v, 16, [](auto &kh, auto x, auto y) { k7(kh, x, y); });
+  same(got, std::vector<int>(16, 256));
+}
+
+BOOST_AUTO_TEST_CASE(k08_a_to_f) {
+  sg::graph g;
+  auto x = input(g, iota_i(16));
+  auto b = g.create_mem_handle<int>(), c = g.create_mem_handle<int>(), d = g.create_mem_handle<int>(),
+       f = g.create_mem_handle<int>();
+  g.submit(test_device(), [&](sg::kernel_handle &kh) { k8(kh, x, b, c, d, f); });
+  std::vector<int> ob, oc, od, of;
+  host_read(g, b, 16, ob);
+  host_read(g, c, 16, oc);
+  host_read(g, d, 16, od);
+  host_read(g, f, 16, of);
+  g.run();
+  g.wait();
+  std::vector<int> wb(16), wc(16), wd(16), wf(16);
+  for (int i = 0; i < 16; ++i) {
+    wb[i] = i + 1;
+    wc[i] = 2 * i;
+    wd[i] = 3 * i + 1;
   }
+  for (int gi = 0; gi < 4; ++gi)
+    for (int l = 0; l < 4; ++l)
+      wf[4 * gi + l] = 2 * (4 * (3 - gi) + l) + 1001;
+  same(ob, wb);
+  same(oc, wc);
+  same(od, wd);
+  same(of, wf);
+  BOOST_CHECK_EQUAL(of[0], 1025);
+  BOOST_CHECK_EQUAL(of[5], 1019);
 }
 
-BOOST_AUTO_TEST_CASE(rank2_row_major_with_non_square_groups) {
-  const auto got = run_one<int, 2>(sycl::range<2>(6, 8), [](sg::kernel_handle &kh) {
-    return kh.parallel_for(sycl::range<2>(6, 8), sycl::range<2>(2, 4), [](sg::item<2> it) {
-      return int(it.id()[0] * 100 + it.id()[1]);
-    });
-  });
-  for (int r = 0; r < 6; ++r)
-    for (int c = 0; c < 8; ++c)
-      BOOST_REQUIRE_EQUAL(got[r * 8 + c], r * 100 + c);
+BOOST_AUTO_TEST_CASE(k09_host_loop_of_element_maps) {
+  const auto got = run_kernel<float, float>(iota_f(64), 64, [](auto &kh, auto x, auto y) { k9(kh, x, y); });
+  std::vector<float> want(64);
+  for (int i = 0; i < 64; ++i)
+    want[i] = 16.f * i + 15.f;
+  same(got, want);
+  BOOST_CHECK_EQUAL(got[0], 15.f);
+  BOOST_CHECK_EQUAL(got[4], 79.f);
 }
 
-BOOST_AUTO_TEST_CASE(rank3) {
-  const auto got = run_one<int, 3>(sycl::range<3>(4, 6, 8), [](sg::kernel_handle &kh) {
-    return kh.parallel_for(sycl::range<3>(4, 6, 8), sycl::range<3>(2, 3, 4), [](sg::item<3> it) {
-      return int(it.id()[0] * 10000 + it.id()[1] * 100 + it.id()[2]);
-    });
-  });
-  for (int a = 0; a < 4; ++a)
-    for (int b = 0; b < 6; ++b)
-      for (int c = 0; c < 8; ++c)
-        BOOST_REQUIRE_EQUAL(got[(a * 6 + b) * 8 + c], a * 10000 + b * 100 + c);
+BOOST_AUTO_TEST_CASE(k10_run_time_component_n_256) {
+  const auto got = run_k10(2.f, 1.f, 256, false);
+  std::vector<float> want(256);
+  for (int i = 0; i < 256; ++i)
+    want[i] = 2.f * i + 1.f;
+  same(got, want);
+  BOOST_CHECK_EQUAL(got[3], 7.f);
 }
 
-BOOST_AUTO_TEST_CASE(item_properties) {
-  const auto got = run_one<int, 1>(sycl::range<1>(16), [](sg::kernel_handle &kh) {
-    return kh.parallel_for(sycl::range<1>(16), sycl::range<1>(4), [](sg::item<1> it) {
-      return int(it.group_id()[0] * 1000 + it.local_id()[0] * 100 + it.range()[0] * 10 + it.group_shape()[0]);
-    });
-  });
-  for (int i = 0; i < 16; ++i)
-    BOOST_REQUIRE_EQUAL(got[i], (i / 4) * 1000 + (i % 4) * 100 + 16 * 10 + 4);
+BOOST_AUTO_TEST_CASE(k10_run_time_component_n_512) {
+  const auto got = run_k10(-1.f, 0.5f, 512, false);
+  std::vector<float> want(512);
+  for (int i = 0; i < 512; ++i)
+    want[i] = -1.f * i + 0.5f;
+  same(got, want);
+  BOOST_CHECK_EQUAL(got[10], -9.5f);
 }
 
-template <class T> void typed() {
-  const auto got = run_one<T, 1>(sycl::range<1>(16), [](sg::kernel_handle &kh) {
-    return kh.parallel_for(sycl::range<1>(16), sycl::range<1>(4),
-                           [](sg::item<1> it) { return static_cast<T>(it.id()[0] + 1); });
-  });
-  for (int i = 0; i < 16; ++i)
-    BOOST_REQUIRE(got[i] == static_cast<T>(i + 1));
-}
-BOOST_AUTO_TEST_CASE(element_types) {
-  typed<std::int8_t>();
-  typed<std::uint8_t>();
-  typed<std::int16_t>();
-  typed<std::int32_t>();
-  typed<std::int64_t>();
-  typed<unsigned>();
-  typed<float>();
-  typed<double>();
+BOOST_AUTO_TEST_CASE(k10_run_time_component_tiled_n_300) {
+  const auto got = run_k10(2.f, 1.f, 300, true);
+  BOOST_REQUIRE_EQUAL(got.size(), 300u);
+  std::vector<float> want(300);
+  for (int i = 0; i < 300; ++i)
+    want[i] = 2.f * i + 1.f;
+  same(got, want);
+  BOOST_CHECK_EQUAL(got[299], 599.f);
 }
 
-BOOST_AUTO_TEST_CASE(struct_elements) {
-  const auto a = run_one<S16, 1>(sycl::range<1>(8), [](sg::kernel_handle &kh) {
-    return kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), [](sg::item<1> it) {
-      return S16{std::int64_t(it.id()[0]), std::int64_t(it.id()[0]) * 3};
-    });
-  });
-  for (int i = 0; i < 8; ++i)
-    BOOST_REQUIRE((a[i] == S16{i, i * 3}));
-  const auto b = run_one<S512, 1>(sycl::range<1>(8), [](sg::kernel_handle &kh) {
-    return kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), [](sg::item<1> it) {
-      S512 s;
-      std::iota(s.v, s.v + 128, int(it.id()[0]) * 1000);
-      return s;
-    });
-  });
-  for (int i = 0; i < 8; ++i)
-    for (int k = 0; k < 128; ++k)
-      BOOST_REQUIRE_EQUAL(b[i].v[k], i * 1000 + k);
-}
-
-BOOST_AUTO_TEST_CASE(two_results_in_one_kernel) {
-  sg::graph g(opts());
-  auto h1 = g.create_mem_handle<int>();
-  auto h2 = g.create_mem_handle<float>();
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    sg::array<sg::result<int>, 1> o1(h1, sg::shape<1>(sycl::range<1>(8)));
-    sg::array<sg::result<float>, 1> o2(h2, sg::shape<1>(sycl::range<1>(8)));
-    gh.define_kernel([o1, o2](sg::kernel_handle &kh) {
-      auto a = kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), [](sg::item<1> it) { return int(it.id()[0]); });
-      auto b = kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), [](sg::item<1> it) { return float(it.id()[0]) * 0.5f; });
-      o1 = kh.evaluate(a);
-      o2 = kh.evaluate(b);
-    });
-  });
+BOOST_AUTO_TEST_CASE(k11_two_inplace_contributions) {
+  sg::graph g;
+  auto ones = input(g, std::vector<float>(64, 1.f));
+  auto y = g.create_mem_handle<float>();
+  g.submit(test_device(), [&](sg::kernel_handle &kh) { k11(kh, ones, y, 1.f); });
+  g.submit(test_device(), [&](sg::kernel_handle &kh) { k11(kh, ones, y, 2.f); });
+  std::vector<float> out;
+  host_read(g, y, 64, out);
   g.run();
-  const auto r1 = read_host(g, dev(), h1, sycl::range<1>(8));
-  const auto r2 = read_host(g, dev(), h2, sycl::range<1>(8));
-  for (int i = 0; i < 8; ++i) {
-    BOOST_REQUIRE_EQUAL(r1[i], i);
-    BOOST_REQUIRE_EQUAL(r2[i], i * 0.5f);
-  }
+  g.wait();
+  same(out, std::vector<float>(64, 3.f));
 }
 
-BOOST_AUTO_TEST_CASE(slice_input) {
-  sg::graph g(opts());
-  auto in = g.create_mem_handle<int>(), out = g.create_mem_handle<int>();
-  write_host(g, dev(), in, sycl::range<1>(16), iota_vec<int>(16));
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    sg::array<int, 1> a(in.slice(4, 8), sg::shape<1>(sycl::range<1>(8)));
-    sg::array<sg::result<int>, 1> o(out, sg::shape<1>(sycl::range<1>(8)));
-    gh.define_kernel([a, o](sg::kernel_handle &kh) {
-      o = kh.evaluate(kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4),
-                                      [a](sg::item<1> it) { return a[it.id()] * 2; }));
-    });
-  });
+BOOST_AUTO_TEST_CASE(k12_interpolation) {
+  std::vector<int> nbr(1024);
+  for (int i = 0; i < 256; ++i)
+    for (int s = 0; s < 4; ++s)
+      nbr[4 * i + s] = (i % 61) + s;
+  sg::graph g;
+  auto src = input(g, iota_f(64));
+  auto nb = input(g, nbr);
+  auto w = input(g, std::vector<float>(1024, 0.25f));
+  auto y = g.create_mem_handle<float>();
+  g.submit(test_device(), [&](sg::kernel_handle &kh) { k12(kh, src, nb, w, y); });
+  std::vector<float> out;
+  host_read(g, y, 256, out);
   g.run();
-  const auto r = read_host(g, dev(), out, sycl::range<1>(8));
-  for (int i = 0; i < 8; ++i)
-    BOOST_REQUIRE_EQUAL(r[i], (i + 4) * 2);
+  g.wait();
+  std::vector<float> want(256);
+  for (int i = 0; i < 256; ++i)
+    want[i] = 0.25f * (4 * (i % 61) + 6);
+  same(out, want);
+  BOOST_CHECK_EQUAL(out[0], 1.5f);
+  BOOST_CHECK_EQUAL(out[100], 40.5f);
 }
 
-BOOST_AUTO_TEST_CASE(zero_range_then_later_nodes) {
-  sg::graph g(opts());
-  auto e = g.create_mem_handle<int>(), h = g.create_mem_handle<int>();
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    sg::array<sg::result<int>, 1> o(e, sg::shape<1>(sycl::range<1>(0)));
-    gh.define_kernel([o](sg::kernel_handle &kh) {
-      o = kh.evaluate(kh.parallel_for(sycl::range<1>(0), sycl::range<1>(4), [](sg::item<1>) { return 1; }));
-    });
-  });
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    sg::array<sg::result<int>, 1> o(h, sg::shape<1>(sycl::range<1>(8)));
-    gh.define_kernel([o](sg::kernel_handle &kh) {
-      o = kh.evaluate(kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4),
-                                      [](sg::item<1> it) { return int(it.id()[0]) + 1; }));
-    });
-  });
-  g.run();
-  const auto r = read_host(g, dev(), h, sycl::range<1>(8));
-  for (int i = 0; i < 8; ++i)
-    BOOST_REQUIRE_EQUAL(r[i], i + 1);
+BOOST_AUTO_TEST_CASE(k13_two_dimensional_five_point_stencil) {
+  std::vector<float> x(64 * 64);
+  for (int r = 0; r < 64; ++r)
+    for (int c = 0; c < 64; ++c)
+      x[r * 64 + c] = static_cast<float>(64 * r + c);
+  const auto got = run_kernel<float, float>(x, 64 * 64, [](auto &kh, auto in, auto y) { k13(kh, in, y); });
+  std::vector<float> want(64 * 64);
+  auto at = [&](int r, int c) { return (r < 0 || r > 63 || c < 0 || c > 63) ? 0.f : x[r * 64 + c]; };
+  for (int r = 0; r < 64; ++r)
+    for (int c = 0; c < 64; ++c)
+      want[r * 64 + c] = at(r, c) + at(r - 1, c) + at(r + 1, c) + at(r, c - 1) + at(r, c + 1);
+  same(got, want);
+  BOOST_CHECK_EQUAL(got[0], 65.f);
+  BOOST_CHECK_EQUAL(got[64 + 1], 325.f);
+}
+
+BOOST_AUTO_TEST_CASE(k14_row_sums_at_cap_1024) {
+  if (!group_of_1024_fits())
+    return;
+  const auto got = run_k14(1024, false);
+  std::vector<int> want(64);
+  for (int r = 0; r < 64; ++r)
+    want[r] = 1024 * r + 523776;
+  same(got, want);
+  BOOST_CHECK_EQUAL(got[0], 523776);
+  BOOST_CHECK_EQUAL(got[63], 588288);
+}
+
+BOOST_AUTO_TEST_CASE(k14_row_sums_at_cap_256) {
+  const auto got = run_k14(256, true);
+  std::vector<int> want(64);
+  for (int r = 0; r < 64; ++r)
+    want[r] = 1024 * r + 523776;
+  same(got, want);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
 
-BOOST_AUTO_TEST_SUITE(mappings)
+BOOST_AUTO_TEST_SUITE(task_code)
 
-namespace {
-using L1 = sg::group_iterator<int, 1, sg::mapping::local>;
-using G1 = sg::group_iterator<int, 1, sg::mapping::global>;
-using I1 = sg::group_iterator<int, 1, sg::mapping::item>;
-
-template <class Build> std::vector<int> run16(Build b) { return run_one<int, 1>(sycl::range<1>(16), b); }
-
-inline auto make_a(sg::kernel_handle &kh) {
-  return kh.parallel_for(sycl::range<1>(16), sycl::range<1>(4), [](sg::item<1> it) { return int(it.id()[0]); });
+BOOST_AUTO_TEST_CASE(k4_spot_values) {
+  const auto got = run_kernel<int, int>(iota_i(1024), 1024, [](auto &kh, auto x, auto y) { k4(kh, x, y); });
+  BOOST_CHECK_EQUAL(got[0], 1);
+  BOOST_CHECK_EQUAL(got[1], 3);
+  BOOST_CHECK_EQUAL(got[1023], 2045);
 }
-} // namespace
 
-BOOST_AUTO_TEST_CASE(local_single) {
-  const auto got = run16([](sg::kernel_handle &kh) {
-    auto a = make_a(kh);
-    auto m = kh.map_groups<sg::mapping::local>(a, [](sycl::id<1> g) { return sg::single<1>{g}; });
-    return kh.parallel_for(sycl::range<1>(16), sycl::range<1>(4), m, [](sg::item<1> it, L1 a) {
-      return a[0][sycl::id<1>(it.local_id()[0])] * 2;
+BOOST_AUTO_TEST_CASE(a_run_of_one_item_on_a_group_of_64_gives_each_tile_its_own_total) {
+  const auto got = run_kernel<int, int>(std::vector<int>(1024, 1), 16, [](auto &kh, auto x_in, auto totals_out) {
+    auto x = kh.source(x_in, sg::shape<1>({1024}));
+    auto x_tiles = kh.tile(x, {64});
+    auto work = kh.work_tiles({16}, {1}, 64);
+    auto scanned = kh.map_work(work, [=](auto unit) {
+      auto x_tile = x_tiles[unit.tile()];
+      auto x_run = sg::flatten(x_tile);
+      return unit.run(x_run, scan_items);
     });
+    auto totals = kh.map_work(work, [=](auto unit) {
+      auto my_scan = scanned[unit.tile()];
+      auto my_last = sg::slice(my_scan, {0, 63}, {1, 1});
+      auto last_run = sg::flatten(my_last);
+      return unit.run(last_run, pass_items);
+    });
+    auto totals_rows = kh.retile(totals, {1});
+    kh.evaluate(totals_out, kh.join(totals_rows));
   });
-  for (int i = 0; i < 16; ++i)
-    BOOST_REQUIRE_EQUAL(got[i], 2 * i);
+  same(got, std::vector<int>(16, 64));
 }
 
-BOOST_AUTO_TEST_CASE(local_ids_slot_order) {
-  const auto got = run16([](sg::kernel_handle &kh) {
-    auto a = make_a(kh);
-    auto m = kh.map_groups<sg::mapping::local>(a, [](sycl::id<1> g) {
-      return sg::ids<1, 3>{{sycl::id<1>(g[0]), sycl::id<1>((g[0] + 1) % 4), sycl::id<1>((g[0] + 2) % 4)}};
+BOOST_AUTO_TEST_CASE(maps_of_run_3_and_run_2_over_one_work_set_match_sequential_references) {
+  sg::graph g;
+  auto xh = input(g, iota_i(192));
+  auto y3h = g.create_mem_handle<int>();
+  auto y2h = g.create_mem_handle<int>();
+  g.submit(test_device(), [&](sg::kernel_handle &kh) {
+    auto x = kh.source(xh, sg::shape<1>({192}));
+    auto ts = kh.tile(x, {3});
+    auto work = kh.work_tiles({1}, {64}, 3);
+    auto y3 = kh.map_work(work, [=](auto unit) {
+      auto u = unit.id();
+      auto tile = ts[u[0]];
+      auto run = sg::flatten(tile);
+      return unit.run(run, sum_items);
     });
-    return kh.parallel_for(sycl::range<1>(16), sycl::range<1>(4), m, [](sg::item<1> it, L1 a) {
-      const sycl::id<1> l(it.local_id()[0]);
-      return a[0][l] + 10 * a[1][l] + 100 * a[2][l];
+    auto y2 = kh.map_work(work, [=](auto unit) {
+      auto u = unit.id();
+      auto tile = ts[u[0]];
+      auto head = sg::slice(tile, {0}, {2});
+      auto run = sg::flatten(head);
+      return unit.run(run, sum_items);
     });
+    kh.evaluate(y3h, kh.join(y3));
+    kh.evaluate(y2h, kh.join(y2));
   });
-  for (int g = 0; g < 4; ++g)
-    for (int l = 0; l < 4; ++l)
-      BOOST_REQUIRE_EQUAL(got[g * 4 + l], (4 * g + l) + 10 * (4 * ((g + 1) % 4) + l) + 100 * (4 * ((g + 2) % 4) + l));
-}
-
-BOOST_AUTO_TEST_CASE(local_block_counts) {
-  for (int count : {1, 3, 8}) {
-    const auto got = run_one<int, 1>(sycl::range<1>(32), [count](sg::kernel_handle &kh) {
-      auto b = kh.parallel_for(sycl::range<1>(32), sycl::range<1>(4), [](sg::item<1> it) { return int(it.id()[0]); });
-      auto m = kh.map_groups<sg::mapping::local>(b, [count](sycl::id<1>) {
-        return sg::block<1>{sycl::id<1>(0), sycl::range<1>(std::size_t(count))};
-      });
-      return kh.parallel_for(sycl::range<1>(32), sycl::range<1>(4), m, [](sg::item<1> it, L1 a) {
-        const sycl::id<1> l(it.local_id()[0]);
-        return a[0][l] + 100 * a[a.size() - 1][l];
-      });
-    });
-    for (int g = 0; g < 8; ++g)
-      for (int l = 0; l < 4; ++l)
-        BOOST_REQUIRE_EQUAL(got[g * 4 + l], l + 100 * (4 * (count - 1) + l));
-  }
-}
-
-BOOST_AUTO_TEST_CASE(index_map_from_data) {
-  sg::graph g(opts());
-  auto idx = g.create_mem_handle<int>(), out = g.create_mem_handle<int>();
-  write_host(g, dev(), idx, sycl::range<1>(8), std::vector<int>{3, 1, 2, 0, 0, 2, 1, 3});
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    sg::array<int, 1> ix(idx, sg::shape<1>(sycl::range<1>(8)));
-    sg::array<sg::result<int>, 1> o(out, sg::shape<1>(sycl::range<1>(8)));
-    gh.define_kernel([ix, o](sg::kernel_handle &kh) {
-      auto a = make_a(kh);
-      auto m = kh.map_groups<sg::mapping::local>(a, [ix](sycl::id<1> g) {
-        return sg::index_map<1, int>{ix, g[0] * 2, 2};
-      });
-      o = kh.evaluate(kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), m, [](sg::item<1> it, L1 a) {
-        const sycl::id<1> l(it.local_id()[0]);
-        return a[0][l] + 10 * a[1][l];
-      }));
-    });
-  });
+  std::vector<int> o3, o2;
+  host_read(g, y3h, 64, o3);
+  host_read(g, y2h, 64, o2);
   g.run();
-  const auto r = read_host(g, dev(), out, sycl::range<1>(8));
-  const int ids[8] = {3, 1, 2, 0, 0, 2, 1, 3};
-  for (int gi = 0; gi < 2; ++gi)
-    for (int l = 0; l < 4; ++l)
-      BOOST_REQUIRE_EQUAL(r[gi * 4 + l], (4 * ids[gi * 2] + l) + 10 * (4 * ids[gi * 2 + 1] + l));
-}
-
-BOOST_AUTO_TEST_CASE(item_chain_of_three) {
-  const auto got = run16([](sg::kernel_handle &kh) {
-    auto a = make_a(kh);
-    auto ma = kh.map_groups<sg::mapping::item>(a, [](sycl::id<1> g) { return sg::single<1>{g}; });
-    auto b = kh.parallel_for(sycl::range<1>(16), sycl::range<1>(4), ma, [](sg::item<1>, I1 a) { return a[0] + 1; });
-    auto mb = kh.map_groups<sg::mapping::item>(b, [](sycl::id<1> g) { return sg::single<1>{g}; });
-    auto c = kh.parallel_for(sycl::range<1>(16), sycl::range<1>(4), mb, [](sg::item<1>, I1 b) { return b[0] * 2; });
-    auto mc = kh.map_groups<sg::mapping::item>(c, [](sycl::id<1> g) { return sg::single<1>{g}; });
-    return kh.parallel_for(sycl::range<1>(16), sycl::range<1>(4), mc, [](sg::item<1>, I1 c) { return c[0] - 3; });
-  });
-  for (int i = 0; i < 16; ++i)
-    BOOST_REQUIRE_EQUAL(got[i], (i + 1) * 2 - 3);
-}
-
-BOOST_AUTO_TEST_CASE(local_between_different_group_shapes) {
-  const auto got = run_one<int, 1>(sycl::range<1>(16), [](sg::kernel_handle &kh) {
-    auto a = kh.parallel_for(sycl::range<1>(16), sycl::range<1>(2), [](sg::item<1> it) { return int(it.id()[0]); });
-    auto m = kh.map_groups<sg::mapping::local>(a, [](sycl::id<1> g) {
-      return sg::block<1>{sycl::id<1>(g[0] * 2), sycl::range<1>(2)};
-    });
-    return kh.parallel_for(sycl::range<1>(16), sycl::range<1>(4), m, [](sg::item<1> it, L1 a) {
-      const std::size_t l = it.local_id()[0];
-      return a[l / 2][sycl::id<1>(l % 2)];
-    });
-  });
-  for (int i = 0; i < 16; ++i)
-    BOOST_REQUIRE_EQUAL(got[i], i);
-}
-
-BOOST_AUTO_TEST_CASE(global_far_groups) {
-  const auto got = run16([](sg::kernel_handle &kh) {
-    auto a = make_a(kh);
-    auto m = kh.map_groups<sg::mapping::global>(a, [](sycl::id<1> g) { return sg::single<1>{sycl::id<1>(3 - g[0])}; });
-    return kh.parallel_for(sycl::range<1>(16), sycl::range<1>(4), m, [](sg::item<1> it, G1 a) {
-      return a[0][sycl::id<1>(it.local_id()[0])];
-    });
-  });
-  for (int g = 0; g < 4; ++g)
-    for (int l = 0; l < 4; ++l)
-      BOOST_REQUIRE_EQUAL(got[g * 4 + l], 4 * (3 - g) + l);
-}
-
-BOOST_AUTO_TEST_CASE(global_chain_of_30) {
-  const auto got = run16([](sg::kernel_handle &kh) {
-    auto d = make_a(kh);
-    for (int k = 0; k < 30; ++k) {
-      auto m = kh.map_groups<sg::mapping::global>(d, [](sycl::id<1> g) { return sg::single<1>{g}; });
-      d = kh.parallel_for(sycl::range<1>(16), sycl::range<1>(4), m, [](sg::item<1> it, G1 a) {
-        return a[0][sycl::id<1>(it.local_id()[0])] + 1;
-      });
-    }
-    return d;
-  });
-  for (int i = 0; i < 16; ++i)
-    BOOST_REQUIRE_EQUAL(got[i], i + 30);
-}
-
-BOOST_AUTO_TEST_CASE(same_lambda_at_ten_layers) {
-  const auto got = run16([](sg::kernel_handle &kh) {
-    auto d = make_a(kh);
-    for (int k = 0; k < 10; ++k) {
-      auto m = kh.map_groups<sg::mapping::global>(d, [](sycl::id<1> g) { return sg::single<1>{g}; });
-      d = kh.parallel_for(sycl::range<1>(16), sycl::range<1>(4), m, [](sg::item<1> it, G1 a) {
-        return a[0][sycl::id<1>(it.local_id()[0])] * 2 % 1000;
-      });
-    }
-    return d;
-  });
-  for (int i = 0; i < 16; ++i) {
-    int v = i;
-    for (int k = 0; k < 10; ++k)
-      v = v * 2 % 1000;
-    BOOST_REQUIRE_EQUAL(got[i], v);
+  g.wait();
+  std::vector<int> w3(64), w2(64);
+  for (int u = 0; u < 64; ++u) {
+    w3[u] = 9 * u + 3;
+    w2[u] = 6 * u + 1;
   }
+  same(o3, w3);
+  same(o2, w2);
 }
 
-BOOST_AUTO_TEST_CASE(global_source_also_evaluated_and_shared) {
-  sg::graph g(opts());
-  auto ha = g.create_mem_handle<int>(), hb = g.create_mem_handle<int>(), hc = g.create_mem_handle<int>();
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    sg::array<sg::result<int>, 1> oa(ha, sg::shape<1>(sycl::range<1>(16)));
-    sg::array<sg::result<int>, 1> ob(hb, sg::shape<1>(sycl::range<1>(16)));
-    sg::array<sg::result<int>, 1> oc(hc, sg::shape<1>(sycl::range<1>(16)));
-    gh.define_kernel([oa, ob, oc](sg::kernel_handle &kh) {
-      auto a = make_a(kh);
-      auto m = kh.map_groups<sg::mapping::global>(a, [](sycl::id<1> g) { return sg::single<1>{g}; });
-      auto b = kh.parallel_for(sycl::range<1>(16), sycl::range<1>(4), m, [](sg::item<1> it, G1 a) {
-        return a[0][sycl::id<1>(it.local_id()[0])] + 100;
-      });
-      auto c = kh.parallel_for(sycl::range<1>(16), sycl::range<1>(4), m, [](sg::item<1> it, G1 a) {
-        return a[0][sycl::id<1>(it.local_id()[0])] + 200;
-      });
-      oa = kh.evaluate(a);
-      ob = kh.evaluate(b);
-      oc = kh.evaluate(c);
-    });
-  });
-  g.run();
-  const auto a = read_host(g, dev(), ha, sycl::range<1>(16));
-  const auto b = read_host(g, dev(), hb, sycl::range<1>(16));
-  const auto c = read_host(g, dev(), hc, sycl::range<1>(16));
-  for (int i = 0; i < 16; ++i) {
-    BOOST_REQUIRE_EQUAL(a[i], i);
-    BOOST_REQUIRE_EQUAL(b[i], i + 100);
-    BOOST_REQUIRE_EQUAL(c[i], i + 200);
-  }
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(item_kernels)
+
+BOOST_AUTO_TEST_CASE(k9_gives_16i_plus_15) {
+  const auto got = run_kernel<float, float>(iota_f(64), 64, [](auto &kh, auto x, auto y) { k9(kh, x, y); });
+  BOOST_CHECK_EQUAL(got[0], 15.f);
+  BOOST_CHECK_EQUAL(got[4], 79.f);
 }
 
-BOOST_AUTO_TEST_CASE(a_to_f) {
-  sg::graph g(opts());
-  auto hb = g.create_mem_handle<int>(), hc = g.create_mem_handle<int>(), hd = g.create_mem_handle<int>(),
-       hf = g.create_mem_handle<int>();
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    sg::array<sg::result<int>, 1> ob(hb, sg::shape<1>(sycl::range<1>(16))), oc(hc, sg::shape<1>(sycl::range<1>(16))),
-        od(hd, sg::shape<1>(sycl::range<1>(16))), of(hf, sg::shape<1>(sycl::range<1>(16)));
-    gh.define_kernel([ob, oc, od, of](sg::kernel_handle &kh) {
-      const sycl::range<1> r(16), gs(4);
-      auto A = make_a(kh);
-      auto mA = kh.map_groups<sg::mapping::local>(A, [](sycl::id<1> g) { return sg::single<1>{g}; });
-      auto B = kh.parallel_for(r, gs, mA, [](sg::item<1> it, L1 a) { return a[0][sycl::id<1>(it.local_id()[0])] + 1; });
-      auto C = kh.parallel_for(r, gs, mA, [](sg::item<1> it, L1 a) { return a[0][sycl::id<1>(it.local_id()[0])] * 2; });
-      auto mB = kh.map_groups<sg::mapping::local>(B, [](sycl::id<1> g) { return sg::single<1>{g}; });
-      auto mC = kh.map_groups<sg::mapping::local>(C, [](sycl::id<1> g) { return sg::single<1>{g}; });
-      auto D = kh.parallel_for(r, gs, mB, mC, [](sg::item<1> it, L1 b, L1 c) {
-        const sycl::id<1> l(it.local_id()[0]);
-        return b[0][l] + c[0][l];
-      });
-      auto mE = kh.map_groups<sg::mapping::global>(C, [](sycl::id<1> g) { return sg::single<1>{sycl::id<1>(3 - g[0])}; });
-      auto E = kh.parallel_for(r, gs, mE, [](sg::item<1> it, G1 c) { return c[0][sycl::id<1>(it.local_id()[0])] + 1000; });
-      auto mF = kh.map_groups<sg::mapping::item>(E, [](sycl::id<1> g) { return sg::single<1>{g}; });
-      auto F = kh.parallel_for(r, gs, mF, [](sg::item<1>, I1 e) { return e[0] + 1; });
-      ob = kh.evaluate(B);
-      oc = kh.evaluate(C);
-      od = kh.evaluate(D);
-      of = kh.evaluate(F);
-    });
-  });
-  g.run();
-  const auto b = read_host(g, dev(), hb, sycl::range<1>(16));
-  const auto c = read_host(g, dev(), hc, sycl::range<1>(16));
-  const auto d = read_host(g, dev(), hd, sycl::range<1>(16));
-  const auto f = read_host(g, dev(), hf, sycl::range<1>(16));
-  for (int gi = 0; gi < 4; ++gi)
-    for (int l = 0; l < 4; ++l) {
-      const int i = 4 * gi + l, src = 4 * (3 - gi) + l;
-      BOOST_REQUIRE_EQUAL(b[i], i + 1);
-      BOOST_REQUIRE_EQUAL(c[i], 2 * i);
-      BOOST_REQUIRE_EQUAL(d[i], 3 * i + 1);
-      BOOST_REQUIRE_EQUAL(f[i], 2 * src + 1000 + 1);
-    }
+BOOST_AUTO_TEST_CASE(a_range_of_1000003_items_matches_the_reference_and_the_last_element_is_written) {
+  const int n = 1000003;
+  std::vector<float> x(n);
+  for (int i = 0; i < n; ++i)
+    x[i] = static_cast<float>(i % 1000);
+  const auto got = run_kernel<float, float>(x, n, [n](auto &kh, auto in, auto y) { k9(kh, in, y, 1, n); });
+  BOOST_REQUIRE_EQUAL(got.size(), static_cast<std::size_t>(n));
+  for (int i = 0; i < n; ++i)
+    BOOST_REQUIRE_EQUAL(got[i], 2.f * x[i] + 1.f);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
