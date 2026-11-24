@@ -1,59 +1,105 @@
 // SPDX-License-Identifier: BSD-2-Clause
-// Fixed-layout records shared by host and device. All addresses are absolute
-// device addresses written per launch.
+// Fixed-layout records shared by the host encoder and the device decoder. The
+// bound block holds them all; it is the single data argument of the kernel.
 #ifndef HIPSYCL_SG_DETAIL_DEV_ABI_HPP
 #define HIPSYCL_SG_DETAIL_DEV_ABI_HPP
 
 #include <cstdint>
 
+namespace sg::detail {
+
+constexpr std::uint32_t max_item_regs = 256;
+
+enum class run_kind : std::uint32_t { plain = 0, distributed = 1, replicated = 2 };
+enum class result_kind : std::uint32_t { per_item = 0, reduced = 1, binned = 2 };
+
+} // namespace sg::detail
+
 namespace sg::detail::dev {
 
-constexpr std::uint32_t flag_unclaimed = 0, flag_in_progress = 1, flag_done = 2,
-                        no_layer = 0xffffffffu;
+constexpr std::uint64_t block_magic = 0x5347424c4f434b31ull;
+constexpr std::uint32_t no_local = 0xffffffffu;
 
-struct launch_ctx {
-  std::uint64_t layers, nodes, links;
-  std::uint32_t num_layers, pad;
+// Flag slot 0 is the ticket counter; task flags follow.
+struct block_header {
+  std::uint64_t magic;
+  std::uint32_t n_tickets, n_tasks;
+  std::uint32_t n_item_tasks, n_regs_bytes;
+  std::uint64_t n_items;      // work-item kernels: the range, flattened
+  std::uint64_t items_ext[3]; // work-item kernels: the range's extents
+  std::uint32_t items_rank, pad0;
+  std::uint64_t off_tickets, off_tasks, off_waits, off_copies, off_views, off_sels, off_item_tasks,
+      off_closures, off_tables;
+  std::uint64_t flags; // device address of the uint32 flags
+  std::uint32_t n_flags, pad1;
 };
 
-struct layer_rec {
-  std::uint64_t range_offset, groups, backing, flags;
-  std::uint64_t extent[3];
-  std::uint32_t root_node, result_kind;
+struct ticket_rec {
+  std::uint32_t first_task, n_tasks, first_copy, n_copies;
 };
 
-struct node_rec {
-  std::uint64_t range[3], group_shape[3], grid[3];
-  std::uint64_t closure, elem_bytes, group_elems, frame_bytes, scratch_offset;
-  std::uint32_t rank, body_kind, link_first, link_count;
+struct copy_rec {
+  std::int32_t view;
+  std::uint32_t local_off;
+  std::int64_t tile;
+  std::uint64_t elems;
+  std::uint32_t elem_bytes, pad;
 };
 
-struct link_rec {
-  std::uint32_t kind, form, source, src_rank;
-  std::uint64_t count, closure, slot_bytes, slots_offset, child_frame_offset,
-      child_frame_stride, child_frame_bytes;
-  std::uint64_t src_grid[3], src_group_shape[3], src_elem_bytes;
+struct sel_rec {
+  std::int32_t view;
+  std::int32_t local_off; // byte offset of a local copy of the tile, or -1
+  std::int64_t tile;
+  std::int64_t off[3];
+  std::int64_t ext[3];
+  std::int64_t len;
 };
 
-struct tile_out {
-  std::uint64_t base;
-  std::uint64_t stride[3]; // in elements
-  std::uint64_t elem_bytes;
-  std::uint64_t group_shape[3];
+struct task_rec {
+  std::uint32_t task_id, flag;
+  std::uint32_t first_wait, n_waits;
+  std::uint32_t first_sel, n_inputs;
+  std::uint32_t n_units, run_kind;
+  std::uint32_t result_kind, stride; // result kind; lanes per unit
+  std::int64_t run_len;              // positions of the run of one unit
+  std::uint32_t seg, segs;
+  std::uint32_t ips, rounds;
+  std::int64_t tile_idx;
+  std::uint32_t out_bytes, bins;
+  std::uint32_t out_flags, local_out_off;
+  std::uint64_t out_global;
+  std::int64_t out_tile_elems;
+  std::uint64_t eval_addr;
+  std::int64_t eval_grid[3], eval_shape[3], eval_extent[3];
+  std::uint64_t closure;
+  std::uint32_t closure_bytes, partial_stride;
+  std::uint64_t partial_addr;
+  std::uint32_t unit_grid[3], pad;
 };
 
-struct iterator_state {
-  const launch_ctx *ctx;
-  std::uint32_t node, link;
-  std::uint64_t g, l;
-  void *frame;
+constexpr std::uint32_t out_global = 1, out_local = 2, out_eval = 4, out_last_only = 8;
+
+constexpr int max_item_inputs = 4;
+
+struct item_input_rec {
+  std::uint32_t kind; // 0 source element, 1 array element, 2 register
+  std::int32_t view;
+  std::uint32_t reg, bytes;
+  std::int64_t off[3];
 };
 
-static_assert(sizeof(launch_ctx) == 32);
-static_assert(sizeof(layer_rec) == 64);
-static_assert(sizeof(node_rec) == 128);
-static_assert(sizeof(link_rec) == 128);
-static_assert(sizeof(tile_out) == 64);
+struct item_task_rec {
+  std::uint32_t task_id, n_inputs;
+  std::uint32_t out_reg, out_bytes;
+  std::uint32_t closure_bytes, eval, sink, pad;
+  std::uint64_t closure;
+  std::uint64_t eval_addr;
+  std::int64_t eval_extent[3];
+  item_input_rec in[max_item_inputs];
+};
+
+static_assert(sizeof(ticket_rec) % 8 == 0 && sizeof(copy_rec) % 8 == 0 && sizeof(sel_rec) % 8 == 0 &&
+              sizeof(task_rec) % 8 == 0 && sizeof(item_task_rec) % 8 == 0 && sizeof(block_header) % 8 == 0);
 
 } // namespace sg::detail::dev
 

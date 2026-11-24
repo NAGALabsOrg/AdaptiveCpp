@@ -1,59 +1,67 @@
 // SPDX-License-Identifier: BSD-2-Clause
+// Reading the bound block: one definition shared by the host encoder and the
+// device decoder. Every record is addressed from the block's start and every
+// field is accessed through its naturally aligned type.
 #ifndef HIPSYCL_SG_DETAIL_DEV_LAYOUT_HPP
 #define HIPSYCL_SG_DETAIL_DEV_LAYOUT_HPP
 
 #include "hipSYCL/sg/detail/dev/abi.hpp"
+#include "hipSYCL/sg/detail/view_desc.hpp"
 
+#include <cstddef>
 #include <cstdint>
 
 namespace sg::detail::dev {
 
-// row-major, dimension 0 slowest
-inline void unflatten3(std::uint64_t k, const std::uint64_t dims[3], std::uint64_t out[3]) {
-  for (int d = 2; d >= 0; --d) {
-    const std::uint64_t e = dims[d] ? dims[d] : 1;
-    out[d] = k % e;
-    k /= e;
-  }
-}
-inline std::uint64_t flatten3(const std::uint64_t id[3], const std::uint64_t dims[3]) {
-  return (id[0] * dims[1] + id[1]) * dims[2] + id[2];
-}
+using block_t = const std::byte *;
 
-inline tile_out layer_tile(const layer_rec &l, const node_rec &n, std::uint64_t g) {
-  tile_out t;
-  std::uint64_t gid[3], origin[3];
-  unflatten3(g, n.grid, gid);
-  for (int d = 0; d < 3; ++d)
-    origin[d] = gid[d] * n.group_shape[d];
-  t.stride[2] = 1;
-  t.stride[1] = l.extent[2];
-  t.stride[0] = l.extent[1] * l.extent[2];
-  t.base = l.backing + flatten3(origin, l.extent) * n.elem_bytes;
-  t.elem_bytes = n.elem_bytes;
-  for (int d = 0; d < 3; ++d)
-    t.group_shape[d] = n.group_shape[d];
-  return t;
-}
+inline const block_header &header_of(block_t b) { return *reinterpret_cast<const block_header *>(b); }
 
-inline tile_out dense_tile(std::uint64_t base, const std::uint64_t group_shape[3],
-                           std::uint64_t elem_bytes) {
-  tile_out t;
-  t.base = base;
-  t.stride[2] = 1;
-  t.stride[1] = group_shape[2];
-  t.stride[0] = group_shape[1] * group_shape[2];
-  t.elem_bytes = elem_bytes;
-  for (int d = 0; d < 3; ++d)
-    t.group_shape[d] = group_shape[d];
-  return t;
+inline const ticket_rec *tickets_of(block_t b) {
+  return reinterpret_cast<const ticket_rec *>(b + header_of(b).off_tickets);
 }
+inline const task_rec *tasks_of(block_t b) { return reinterpret_cast<const task_rec *>(b + header_of(b).off_tasks); }
+inline const std::uint32_t *waits_of(block_t b) {
+  return reinterpret_cast<const std::uint32_t *>(b + header_of(b).off_waits);
+}
+inline const copy_rec *copies_of(block_t b) { return reinterpret_cast<const copy_rec *>(b + header_of(b).off_copies); }
+inline const view_node *views_of(block_t b) { return reinterpret_cast<const view_node *>(b + header_of(b).off_views); }
+inline const sel_rec *sels_of(block_t b) { return reinterpret_cast<const sel_rec *>(b + header_of(b).off_sels); }
+inline const item_task_rec *item_tasks_of(block_t b) {
+  return reinterpret_cast<const item_task_rec *>(b + header_of(b).off_item_tasks);
+}
+inline std::uint32_t *flags_of(block_t b) { return reinterpret_cast<std::uint32_t *>(header_of(b).flags); }
 
-inline std::uint64_t tile_address(const tile_out &t, std::uint64_t l) {
-  std::uint64_t lid[3];
-  unflatten3(l, t.group_shape, lid);
-  return t.base + (lid[0] * t.stride[0] + lid[1] * t.stride[1] + lid[2] * t.stride[2]) *
-                      t.elem_bytes;
+// Sizes of the sections, in bytes, as the encoder lays them out in this order.
+struct block_sizes {
+  std::uint64_t tickets = 0, tasks = 0, waits = 0, copies = 0, views = 0, sels = 0, item_tasks = 0,
+                closures = 0, tables = 0;
+};
+
+inline std::uint64_t align_up(std::uint64_t v, std::uint64_t a) { return (v + a - 1) / a * a; }
+
+// Fills the header's offsets for the given section sizes; returns the block size.
+inline std::uint64_t lay_out(block_header &h, const block_sizes &s) {
+  std::uint64_t at = align_up(sizeof(block_header), 16);
+  h.off_tickets = at;
+  at = align_up(at + s.tickets, 16);
+  h.off_tasks = at;
+  at = align_up(at + s.tasks, 16);
+  h.off_waits = at;
+  at = align_up(at + s.waits, 16);
+  h.off_copies = at;
+  at = align_up(at + s.copies, 16);
+  h.off_views = at;
+  at = align_up(at + s.views, 16);
+  h.off_sels = at;
+  at = align_up(at + s.sels, 16);
+  h.off_item_tasks = at;
+  at = align_up(at + s.item_tasks, 16);
+  h.off_closures = at;
+  at = align_up(at + s.closures, 16);
+  h.off_tables = at;
+  at = align_up(at + s.tables, 16);
+  return align_up(at, 256);
 }
 
 } // namespace sg::detail::dev
