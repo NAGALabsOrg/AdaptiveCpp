@@ -16,6 +16,7 @@
 #include <llvm/Analysis/LoopInfo.h>
 #include <llvm/Analysis/RegionInfo.h>
 #include <llvm/IR/DIBuilder.h>
+#include <llvm/IR/DataLayout.h>
 #include <llvm/IR/DebugInfo.h>
 #include <llvm/IR/Dominators.h>
 #include <llvm/IR/IRBuilder.h>
@@ -356,6 +357,22 @@ llvm::Instruction *getBrCmp(const llvm::BasicBlock &BB) {
   return nullptr;
 }
 
+llvm::Type *widenedElementType(const llvm::AllocaInst &Orig, llvm::Type *T) {
+  const llvm::DataLayout &DL = Orig.getModule()->getDataLayout();
+  const llvm::TypeSize Size = DL.getTypeAllocSize(T);
+  if (Size.isScalable())
+    return T;
+  const uint64_t A = Orig.getAlign().value();
+  const uint64_t Padded = (Size.getFixedValue() + A - 1) / A * A;
+  if (Padded == Size.getFixedValue())
+    return T;
+  return llvm::ArrayType::get(llvm::Type::getInt8Ty(T->getContext()), Padded);
+}
+
+llvm::Align widenedAlignment(const llvm::AllocaInst &Orig) {
+  return std::max(llvm::Align{hipsycl::compiler::DefaultAlignment}, Orig.getAlign());
+}
+
 void arrayifyAllocas(llvm::BasicBlock *EntryBlock, llvm::Loop &L, llvm::Value *Idx,
                      const llvm::DominatorTree &DT) {
   assert(Idx && "Valid WI-Index required");
@@ -390,8 +407,9 @@ void arrayifyAllocas(llvm::BasicBlock *EntryBlock, llvm::Loop &L, llvm::Value *I
     }
 
     auto *Alloca = AllocaBuilder.CreateAlloca(
-        T, AllocaBuilder.getInt32(hipsycl::compiler::NumArrayElements), I->getName() + "_alloca");
-    Alloca->setAlignment(llvm::Align{hipsycl::compiler::DefaultAlignment});
+        widenedElementType(*I, T), AllocaBuilder.getInt32(hipsycl::compiler::NumArrayElements),
+        I->getName() + "_alloca");
+    Alloca->setAlignment(widenedAlignment(*I));
     Alloca->setMetadata(hipsycl::compiler::MDKind::Arrayified, MDAlloca);
 
     llvm::Instruction *GepIp = nullptr;

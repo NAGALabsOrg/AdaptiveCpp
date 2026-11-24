@@ -826,7 +826,7 @@ void SubCFG::loadMultiSubCfgValues(
         if (auto *GEP = llvm::dyn_cast<llvm::GetElementPtrInst>(InstAllocaPair.first))
           if (auto *MDArrayified = GEP->getMetadata(hipsycl::compiler::MDKind::Arrayified)) {
             auto *NewGEP = llvm::cast<llvm::GetElementPtrInst>(Builder.CreateInBoundsGEP(
-                GEP->getType(), GEP->getPointerOperand(), NewContIdx, GEP->getName() + "c"));
+                GEP->getSourceElementType(), GEP->getPointerOperand(), NewContIdx, GEP->getName() + "c"));
             NewGEP->setMetadata(hipsycl::compiler::MDKind::Arrayified, MDArrayified);
             VMap[InstAllocaPair.first] = NewGEP;
             continue;
@@ -1130,7 +1130,7 @@ void SubCFG::fixSingleSubCfgValues(
             if (auto *MDArrayified = GEP->getMetadata(hipsycl::compiler::MDKind::Arrayified)) {
               Builder.SetInsertPoint(LoadIP);
               auto *NewGEP = llvm::cast<llvm::GetElementPtrInst>(Builder.CreateInBoundsGEP(
-                  GEP->getType(), GEP->getPointerOperand(), ContIdx_, GEP->getName() + "c"));
+                  GEP->getSourceElementType(), GEP->getPointerOperand(), ContIdx_, GEP->getName() + "c"));
               NewGEP->setMetadata(hipsycl::compiler::MDKind::Arrayified, MDArrayified);
               I.replaceUsesOfWith(OPI, NewGEP);
               InstLoadMap[OPI].push_back(NewGEP);
@@ -1415,8 +1415,9 @@ void arrayifyAllocas(llvm::BasicBlock *EntryBlock, llvm::DominatorTree &DT,
       }
     }
 
-    auto *Alloca = AllocaBuilder.CreateAlloca(T, ReqdArrayElements, I->getName() + "_alloca");
-    Alloca->setAlignment(llvm::Align{hipsycl::compiler::DefaultAlignment});
+    auto *Alloca = AllocaBuilder.CreateAlloca(utils::widenedElementType(*I, T), ReqdArrayElements,
+                                              I->getName() + "_alloca");
+    Alloca->setAlignment(utils::widenedAlignment(*I));
     Alloca->setMetadata(hipsycl::compiler::MDKind::Arrayified, MDAlloca);
 
     for (auto &SubCfg : SubCfgs) {

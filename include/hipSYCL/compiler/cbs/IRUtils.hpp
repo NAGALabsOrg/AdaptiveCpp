@@ -17,6 +17,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/Module.h>
+#include <llvm/Support/Alignment.h>
 
 namespace llvm {
 class Region;
@@ -148,6 +149,12 @@ llvm::BasicBlock *splitEdge(llvm::BasicBlock *Root, llvm::BasicBlock *&Target,
 void promoteAllocas(llvm::BasicBlock *EntryBlock, llvm::DominatorTree &DT,
                     llvm::AssumptionCache &AC);
 llvm::Instruction *getBrCmp(const llvm::BasicBlock &BB);
+
+/// The element type of the widened copy of \a Orig, whose value type is \a T: \a T itself, or a byte array
+/// padded to a multiple of the original alignment, so that every work item's slice keeps that alignment.
+llvm::Type *widenedElementType(const llvm::AllocaInst &Orig, llvm::Type *T);
+/// The alignment of the widened copy of \a Orig: the default, or the original alignment when that is larger.
+llvm::Align widenedAlignment(const llvm::AllocaInst &Orig);
 
 /// Arrayification of work item private values
 void arrayifyAllocas(llvm::BasicBlock *EntryBlock, llvm::Loop &L, llvm::Value *Idx,
