@@ -3,6 +3,9 @@
 #   nu naga/tasks/sg-jit-measure.nu <label> [--backends omp,cuda,ocl,ze] [--lengths 10,20,30]
 #       [--reps 3] [--timeout 1800]
 #
+# The Level Zero sweep of chains 20 to 29 is not in the regular suite; run it here:
+#   nu naga/tasks/sg-jit-measure.nu <label> --backends ze --lengths 20,21,22,23,24,25,26,27,28,29,30
+#
 # Each run gets a fresh, empty ACPP_APPDB_DIR, the drivers' on-disk caches switched off and
 # ACPP_S2_DUMP_IR_FINAL set; the user's ~/.acpp and the drivers' cache directories are never
 # read or written. Results go to ~/logs/acpp-fork/sg-jit-<label>-<timestamp>/results.csv and

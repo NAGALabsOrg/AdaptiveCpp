@@ -17,8 +17,6 @@ void run_chain(int n) {
                                                        << want[i]);
 }
 
-bool on_level_zero() { return test_device().get_backend() == sycl::backend::level_zero; }
-
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(chains)
@@ -26,14 +24,5 @@ BOOST_AUTO_TEST_SUITE(chains)
 BOOST_AUTO_TEST_CASE(chain_of_10_work_sets) { run_chain(10); }
 
 BOOST_AUTO_TEST_CASE(chain_of_30_work_sets) { run_chain(30); }
-
-BOOST_AUTO_TEST_CASE(chains_of_20_to_30_work_sets_on_level_zero) {
-  if (!on_level_zero()) {
-    BOOST_TEST_MESSAGE("SKIPPED: runs only on the Level Zero cell");
-    return;
-  }
-  for (int n = 20; n <= 30; ++n)
-    run_chain(n);
-}
 
 BOOST_AUTO_TEST_SUITE_END()
