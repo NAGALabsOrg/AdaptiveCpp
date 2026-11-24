@@ -1,262 +1,215 @@
-#include "common.hpp"
+#include "../common/check.hpp"
+#include "../common/graphs.hpp"
+
+#include <string>
+#include <vector>
 
 using namespace sgt;
 
 namespace {
-using L1 = sg::group_iterator<int, 1, sg::mapping::local>;
 
-sg::mem_handle<int> good_node(sg::graph &g) {
-  auto ok = g.create_mem_handle<int>();
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    sg::array<sg::result<int>, 1> o(ok, sg::shape<1>(sycl::range<1>(8)));
-    gh.define_kernel([o](sg::kernel_handle &kh) {
-      o = kh.evaluate(kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), [](sg::item<1> it) { return int(it.id()[0]) * 2; }));
-    });
-  });
-  return ok;
+template <class F> std::string failure(F f) {
+  try {
+    f();
+  } catch (const std::exception &e) {
+    return e.what();
+  }
+  return "no error";
 }
-void check_ok(sg::graph &g, sg::mem_handle<int> ok) {
-  const auto r = read_host(g, dev(), ok, sycl::range<1>(8));
-  for (int i = 0; i < 8; ++i)
-    BOOST_REQUIRE_EQUAL(r[i], i * 2);
+
+bool has(const std::string &s, const std::string &part) { return s.find(part) != std::string::npos; }
+
+void expect(const std::string &message, std::initializer_list<const char *> fragments) {
+  for (const char *f : fragments)
+    BOOST_CHECK_MESSAGE(has(message, f), "\"" << f << "\" is missing from: " << message);
 }
-void produce(sg::graph &g, sg::mem_handle<int> h, std::size_t n) {
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    sg::array<sg::result<int>, 1> o(h, sg::shape<1>(sycl::range<1>(n)));
-    gh.define_kernel([o, n](sg::kernel_handle &kh) {
-      o = kh.evaluate(kh.parallel_for(sycl::range<1>(n), sycl::range<1>(4), [](sg::item<1>) { return 1; }));
-    });
-  });
+
+sg::graph_options cap(int c) {
+  sg::graph_options o;
+  o.group_size_cap = c;
+  return o;
 }
+
+template <class T> H<T> with(sg::graph &g, std::vector<T> v) {
+  auto h = g.create_mem_handle<T>();
+  host_write(g, h, std::move(v));
+  return h;
+}
+
 } // namespace
 
-BOOST_AUTO_TEST_SUITE(errors_at_submit)
+BOOST_AUTO_TEST_SUITE(rejections)
 
-BOOST_AUTO_TEST_CASE(nested_submit) {
-  sg::graph g(opts());
-  SG_CHECK_ERRC(g.submit(dev(), [&](sg::submit_handle) { g.submit(dev(), [](sg::submit_handle) {}); }), builder_misuse);
+BOOST_AUTO_TEST_CASE(r01_work_tile_above_the_cap) {
+  sg::graph g(cap(1024));
+  expect(failure([&] {
+           g.submit(test_device(), [&](sg::kernel_handle &kh) { kh.work_tiles({8, 8}, {16, 16}, 128); });
+         }),
+         {"kh.work_tiles", "32768", "1024"});
 }
-BOOST_AUTO_TEST_CASE(no_define_and_two_defines) {
-  sg::graph g(opts());
-  SG_CHECK_ERRC(g.submit(dev(), [](sg::submit_handle) {}), builder_misuse);
-  SG_CHECK_ERRC(g.submit(dev(), [](sg::submit_handle gh) {
-                  gh.define_host_work([] {});
-                  gh.define_host_work([] {});
-                }),
-                builder_misuse);
+
+BOOST_AUTO_TEST_CASE(r02_native_shape_above_3d) {
+  sg::graph g;
+  expect(failure([&] { g.submit(test_device(), [&](sg::kernel_handle &kh) { kh.work_tiles({4}, {2, 2, 2}, 4); }); }),
+         {"kh.work_tiles", "3", "4"});
 }
-BOOST_AUTO_TEST_CASE(outside_a_scope) {
-  sg::graph g(opts());
+
+BOOST_AUTO_TEST_CASE(r03_tile_dependency_cycle) {
+  sg::graph g;
+  auto s = with(g, iota_i(256));
+  auto ix = with(g, iota_i(256));
+  auto y = g.create_mem_handle<int>();
+  g.submit(test_device(), [&](sg::kernel_handle &kh) { k5(kh, s, ix, y, true); });
+  expect(failure([&] { g.run(); }),
+         {"kh.index_map", "work set 0 tile 0", "work set 0 tile 1", "work set 0 tile 2", "work set 0 tile 3"});
+}
+
+BOOST_AUTO_TEST_CASE(r04_plain_mark_local_on_a_distributed_result) {
+  sg::graph g(cap(256));
+  auto x = g.create_mem_handle<int>(), y = g.create_mem_handle<int>();
+  expect(failure([&] { g.submit(test_device(), [&](sg::kernel_handle &kh) { k14(kh, x, y, true, true); }); }),
+         {"kh.mark_local", "4"});
+}
+
+BOOST_AUTO_TEST_CASE(r05_segmented_mark_local_on_a_result_that_is_not_distributed) {
+  sg::graph g;
+  auto x = g.create_mem_handle<float>();
+  expect(failure([&] {
+           g.submit(test_device(), [&](sg::kernel_handle &kh) {
+             auto xs = kh.source(x, sg::shape<1>({64}));
+             auto ts = kh.tile(xs, {4});
+             auto work1 = kh.work_tiles({16}, {1}, 4);
+             auto l1 = sum_tiles(kh, work1, ts);
+             kh.mark_local<sg::segmented>(l1);
+           });
+         }),
+         {"kh.mark_local<sg::segmented>", "1"});
+}
+
+BOOST_AUTO_TEST_CASE(r06_replicated_run_over_a_distributed_result_of_its_own_set) {
+  sg::graph g(cap(256));
+  auto x = with(g, std::vector<int>(64 * 1024, 1));
+  auto y = g.create_mem_handle<int>();
+  g.submit(test_device(), [&](sg::kernel_handle &kh) { k14(kh, x, y, true, false, true); });
+  expect(failure([&] { g.run(); }), {"unit.run_replicated", "4"});
+}
+
+BOOST_AUTO_TEST_CASE(r07_work_tiles_and_work_items_in_one_kernel) {
+  sg::graph g;
+  auto x = g.create_mem_handle<float>(), y = g.create_mem_handle<float>(), total = g.create_mem_handle<float>();
+  expect(failure([&] {
+           g.submit(test_device(), [&](sg::kernel_handle &kh) {
+             k9(kh, x, y);
+             k1(kh, x, total);
+           });
+         }),
+         {"work_tile_sets = 1", "work_item_sets = 1", "kh.work_tiles", "kh.work_items"});
+}
+
+BOOST_AUTO_TEST_CASE(r08_launch_value_as_structure_is_a_compile_error) {
+  const auto &c = sg::rejection_catalogue();
+  BOOST_REQUIRE_GE(c.size(), 8u);
+  BOOST_CHECK_EQUAL(c[7].number, 8);
+  BOOST_CHECK_EQUAL(std::string(c[7].construct), "launch_value");
+}
+
+BOOST_AUTO_TEST_CASE(r09_mark_local_of_array_tiles_given_result_tiles) {
+  sg::graph g;
+  auto x = g.create_mem_handle<float>();
+  expect(failure([&] {
+           g.submit(test_device(), [&](sg::kernel_handle &kh) {
+             auto xs = kh.source(x, sg::shape<1>({64}));
+             auto ts = kh.tile(xs, {4});
+             auto work1 = kh.work_tiles({16}, {1}, 4);
+             auto l1 = sum_tiles(kh, work1, ts);
+             kh.mark_local(l1, work1);
+           });
+         }),
+         {"kh.mark_local", "array tiles"});
+}
+
+BOOST_AUTO_TEST_CASE(r10_item_reading_a_result_array_at_another_index) {
+  sg::graph g;
+  auto x = g.create_mem_handle<float>();
+  expect(failure([&] {
+           g.submit(test_device(), [&](sg::kernel_handle &kh) {
+             auto xs = kh.source(x, sg::shape<1>({64}));
+             auto items = kh.work_items({64});
+             auto first = kh.map_items(items, [=](auto item) {
+               auto v = xs[item.id()];
+               return item.compute(v, step_fn);
+             });
+             auto prev = first.named("prev");
+             kh.map_items(items, [=](auto item) {
+               auto v = prev[item.id() + 1];
+               return item.compute(v, step_fn);
+             });
+           });
+         }),
+         {"kh.map_items", "prev", "1"});
+}
+
+BOOST_AUTO_TEST_CASE(r11_result_array_fed_to_work_tiles) {
+  sg::graph g;
+  auto x = g.create_mem_handle<float>();
+  expect(failure([&] {
+           g.submit(test_device(), [&](sg::kernel_handle &kh) {
+             auto xs = kh.source(x, sg::shape<1>({64}));
+             auto items = kh.work_items({64});
+             auto first = kh.map_items(items, [=](auto item) {
+               auto v = xs[item.id()];
+               return item.compute(v, step_fn);
+             });
+             kh.tile(first, {4});
+           });
+         }),
+         {"kh.map_work", "kh.map_items"});
+}
+
+BOOST_AUTO_TEST_CASE(r12_join_over_a_grid_of_another_rank) {
+  sg::graph g;
   auto h = g.create_mem_handle<int>();
-  SG_CHECK_ERRC((sg::array<int, 1>(h, sg::shape<1>(sycl::range<1>(4)))), not_in_submit_scope);
-  auto p = g.create_promise<int>();
-  SG_CHECK_ERRC(p.future().get(), not_in_submit_scope);
+  expect(failure([&] {
+           g.submit(test_device(), [&](sg::kernel_handle &kh) {
+             auto x = kh.source(h, sg::shape<2>({4, 4}));
+             (void)x;
+             auto star = kh.stencil({{0, 0}, {1, 0}}, sg::range({0, 0}, {4, 4}));
+             kh.join(star);
+           });
+         }),
+         {"kh.join", "2", "1"});
 }
-BOOST_AUTO_TEST_CASE(role_misuse) {
-  sg::graph g(opts());
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    sg::mem_handle<int> null;
-    SG_CHECK_ERRC((sg::array<int, 1>(null, sg::shape<1>(sycl::range<1>(4)))), builder_misuse);
-    SG_CHECK_ERRC(sg::shape<2>({1, 2, 3}), builder_misuse);
-    gh.define_host_work([] {});
+
+BOOST_AUTO_TEST_CASE(r13_slice_beyond_its_work_set) {
+  sg::graph g;
+  auto x = with(g, iota_f(64));
+  g.submit(test_device(), [&](sg::kernel_handle &kh) {
+    auto xs = kh.source(x, sg::shape<1>({64}));
+    auto work1 = kh.work_tiles({16}, {1}, 4);
+    kh.slice_work(work1, {15}, {2}, {1}, {1}, 4);
   });
-  g.run();
-  g.wait();
-}
-BOOST_AUTO_TEST_SUITE_END()
-
-BOOST_AUTO_TEST_SUITE(errors_from_run)
-
-BOOST_AUTO_TEST_CASE(never_produced) {
-  sg::graph g(opts());
-  auto ok = good_node(g);
-  auto h = g.create_mem_handle<int>();
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    sg::host_array<const int, 1> a(h, sg::shape<1>(sycl::range<1>(4)));
-    gh.define_host_work([a] {});
-  });
-  SG_CHECK_ERRC(g.run(), never_produced);
-  check_ok(g, ok);
+  expect(failure([&] { g.run(); }), {"kh.slice_work", "15", "2", "1", "16"});
 }
 
-BOOST_AUTO_TEST_CASE(type_mismatch) {
-  sg::graph g(opts());
-  auto ok = good_node(g);
-  auto h = g.create_mem_handle<int>();
-  produce(g, h, 8);
-  g.run();
-  auto hf = sg::detail::handle_access::make<sg::mem_handle<float>>(sg::detail::handle_access::owner(h),
-                                                                   sg::detail::handle_access::index(h));
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    sg::host_array<const float, 1> a(hf, sg::shape<1>(sycl::range<1>(8)));
-    gh.define_host_work([a] {});
-  });
-  SG_CHECK_ERRC(g.run(), type_mismatch);
-  check_ok(g, ok);
-}
-
-BOOST_AUTO_TEST_CASE(size_mismatch) {
-  sg::graph g(opts());
-  auto ok = good_node(g);
-  auto h = g.create_mem_handle<int>();
-  produce(g, h, 8);
-  g.run();
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    sg::host_array<const int, 1> a(h, sg::shape<1>(sycl::range<1>(16)));
-    gh.define_host_work([a] {});
-  });
-  SG_CHECK_ERRC(g.run(), size_mismatch);
-  check_ok(g, ok);
-}
-
-BOOST_AUTO_TEST_CASE(role_conflict) {
-  sg::graph g(opts());
-  auto ok = good_node(g);
-  auto h = g.create_mem_handle<int>();
-  produce(g, h, 8);
-  g.run();
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    sg::array<int, 1> in(h, sg::shape<1>(sycl::range<1>(8)));
-    sg::array<sg::result<int>, 1> out(h, sg::shape<1>(sycl::range<1>(8)));
-    gh.define_kernel([in, out](sg::kernel_handle &kh) {
-      out = kh.evaluate(kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), [in](sg::item<1> it) { return in[it.id()]; }));
+BOOST_AUTO_TEST_CASE(r14_run_input_longer_than_the_run) {
+  sg::graph g;
+  auto x = with(g, iota_i(8));
+  g.submit(test_device(), [&](sg::kernel_handle &kh) {
+    auto xs = kh.source(x, sg::shape<1>({8}));
+    auto ts = kh.tile(xs, {8});
+    auto work = kh.work_tiles({1}, {1}, 4);
+    kh.map_work(work, [=](auto unit) {
+      auto tile = ts[unit.tile()];
+      auto run = sg::flatten(tile);
+      return unit.run(run, sum_items);
     });
   });
-  SG_CHECK_ERRC(g.run(), role_conflict);
-  check_ok(g, ok);
+  expect(failure([&] { g.run(); }), {"unit.run", "8", "4"});
 }
 
-BOOST_AUTO_TEST_CASE(inplace_group_mismatch) {
-  sg::graph g(opts());
-  auto ok = good_node(g);
-  auto h = g.create_mem_handle<int>();
-  auto contribute = [&](auto op) {
-    g.submit(dev(), [&](sg::submit_handle gh) {
-      sg::array<sg::result<int>, 1> out(sg::inplace(h, op, 0), sg::shape<1>(sycl::range<1>(8)));
-      gh.define_kernel([out](sg::kernel_handle &kh) {
-        out = kh.evaluate(kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), [](sg::item<1>) { return 1; }));
-      });
-    });
-  };
-  contribute(sycl::plus<>{});
-  contribute(sycl::minimum<>{});
-  SG_CHECK_ERRC(g.run(), inplace_group_mismatch);
-  check_ok(g, ok);
-}
-
-BOOST_AUTO_TEST_CASE(shape_mismatch_between_definition_and_result) {
-  sg::graph g(opts());
-  auto ok = good_node(g);
-  auto h = g.create_mem_handle<int>();
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    sg::array<sg::result<int>, 1> out(h, sg::shape<1>(sycl::range<1>(8)));
-    gh.define_kernel([out](sg::kernel_handle &kh) {
-      out = kh.evaluate(kh.parallel_for(sycl::range<1>(16), sycl::range<1>(4), [](sg::item<1>) { return 1; }));
-    });
-  });
-  SG_CHECK_ERRC(g.run(), shape_mismatch);
-  check_ok(g, ok);
-}
-
-BOOST_AUTO_TEST_CASE(item_mapping_from_a_group_body) {
-  sg::graph g(opts());
-  auto ok = good_node(g);
-  auto h = g.create_mem_handle<int>();
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    sg::array<sg::result<int>, 1> out(h, sg::shape<1>(sycl::range<1>(4)));
-    gh.define_kernel([out](sg::kernel_handle &kh) {
-      auto a = kh.parallel_for(sycl::range<1>(32), sycl::range<1>(8), [](sg::item<1>) { return 1; });
-      auto m = kh.map_groups<sg::mapping::local>(a, [](sycl::id<1> g) { return sg::single<1>{g}; });
-      auto grp = kh.parallel_for(sycl::range<1>(4), m, [](sg::group<1>, L1 a) {
-        return sg::group_reduce<1>(a[0], 0, sycl::plus<>{});
-      });
-      auto mi = kh.map_groups<sg::mapping::item>(grp, [](sycl::id<1> g) { return sg::single<1>{g}; });
-      out = kh.evaluate(kh.parallel_for(sycl::range<1>(4), sycl::range<1>(1), mi,
-                                        [](sg::item<1>, sg::group_iterator<int, 1, sg::mapping::item> x) { return x[0]; }));
-    });
-  });
-  SG_CHECK_ERRC(g.run(), mapping_mismatch);
-  check_ok(g, ok);
-}
-
-BOOST_AUTO_TEST_CASE(evaluate_twice) {
-  sg::graph g(opts());
-  auto ok = good_node(g);
-  auto h = g.create_mem_handle<int>();
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    sg::array<sg::result<int>, 1> out(h, sg::shape<1>(sycl::range<1>(8)));
-    gh.define_kernel([out](sg::kernel_handle &kh) {
-      auto d = kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), [](sg::item<1>) { return 1; });
-      out = kh.evaluate(d);
-      out = kh.evaluate(d);
-    });
-  });
-  SG_CHECK_ERRC(g.run(), builder_misuse);
-  check_ok(g, ok);
-}
-
-BOOST_AUTO_TEST_CASE(work_group_too_large) {
-  sg::graph g(opts());
-  auto ok = good_node(g);
-  auto h = g.create_mem_handle<int>();
-  const std::size_t gs = dev().get_info<sycl::info::device::max_work_group_size>() + 1;
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    sg::array<sg::result<int>, 1> out(h, sg::shape<1>(sycl::range<1>(gs)));
-    gh.define_kernel([out, gs](sg::kernel_handle &kh) {
-      out = kh.evaluate(kh.parallel_for(sycl::range<1>(gs), sycl::range<1>(gs), [](sg::item<1>) { return 1; }));
-    });
-  });
-  SG_CHECK_ERRC(g.run(), work_group_too_large);
-  check_ok(g, ok);
-}
-
-BOOST_AUTO_TEST_CASE(local_memory_exceeded) {
-  sg::graph g(opts());
-  auto ok = good_node(g);
-  auto h = g.create_mem_handle<int>();
-  const std::size_t local_limit = dev().get_info<sycl::info::device::local_mem_size>();
-  BOOST_TEST_MESSAGE("device local_mem_size: " << local_limit);
-  if (local_limit > (std::size_t(1) << 30)) {
-    BOOST_WARN_MESSAGE(false, "SKIPPED local_memory_exceeded: the device reports no finite local memory limit (" +
-                                  std::to_string(local_limit) + " bytes)");
-    return;
-  }
-  // each local slot holds one source group of 64 ints (256 B): one more slot than the device's local memory holds
-  const std::size_t slots = local_limit / 256 + 1;
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    sg::array<sg::result<int>, 1> out(h, sg::shape<1>(sycl::range<1>(4)));
-    gh.define_kernel([out, slots](sg::kernel_handle &kh) {
-      auto a = kh.parallel_for(sycl::range<1>(64), sycl::range<1>(64), [](sg::item<1>) { return 1; });
-      auto m = kh.map_groups<sg::mapping::local>(a, [slots](sycl::id<1>) {
-        return sg::block<1>{sycl::id<1>(0), sycl::range<1>(slots)};
-      });
-      out = kh.evaluate(kh.parallel_for(sycl::range<1>(4), sycl::range<1>(4), m, [](sg::item<1>, L1 a) {
-        return int(a.size());
-      }));
-    });
-  });
-  SG_CHECK_ERRC(g.run(), local_memory_exceeded);
-  check_ok(g, ok);
-}
-
-BOOST_AUTO_TEST_CASE(pool_full) {
-  sg::graph g(opts(1));
-  auto h = g.create_mem_handle<int>();
-  produce(g, h, 1u << 22);
-  SG_CHECK_ERRC(g.run(), pool_exhausted);
-}
-
-BOOST_AUTO_TEST_CASE(future_unset) {
-  sg::graph g(opts());
-  auto ok = good_node(g);
-  auto p = g.create_promise<int>();
-  g.submit(dev(), [&](sg::submit_handle gh) {
-    auto v = p.future().get();
-    (void)v;
-    gh.define_host_work([] {});
-  });
-  SG_CHECK_ERRC(g.run(), future_unset);
-  check_ok(g, ok);
+BOOST_AUTO_TEST_CASE(r15_interop_is_not_designed) {
+  sg::graph g;
+  expect(failure([&] { g.submit<sg::interop>(test_device(), 1); }), {"sg::interop"});
 }
 
 BOOST_AUTO_TEST_SUITE_END()
