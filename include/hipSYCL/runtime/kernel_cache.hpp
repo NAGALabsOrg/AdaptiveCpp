@@ -263,6 +263,10 @@ private:
   mutable std::mutex _mutex;
 };
 
+/// The number of stage-2 JIT compilations this process has performed.
+std::uint64_t jit_compilation_count();
+void note_jit_compilation();
+
 class kernel_cache {
 public:
   using code_object_id = kernel_configuration::id_type;
@@ -325,6 +329,7 @@ public:
       if(!persistent_cache_lookup(id_of_binary, compiled_binary)){
         if(!jit_compile(compiled_binary))
           return nullptr;
+        note_jit_compilation();
 
         if(_is_first_jit_compilation.exchange(false)) {
           HIPSYCL_DEBUG_WARNING

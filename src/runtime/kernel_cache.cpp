@@ -33,6 +33,13 @@ namespace hipsycl {
 namespace rt {
 
 namespace {
+std::atomic<std::uint64_t> jit_compilations{0};
+}
+
+std::uint64_t jit_compilation_count() { return jit_compilations.load(); }
+void note_jit_compilation() { jit_compilations.fetch_add(1); }
+
+namespace {
 
 #if defined(__linux__) && !defined(__ANDROID__)
 
