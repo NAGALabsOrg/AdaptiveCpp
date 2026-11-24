@@ -1,183 +1,83 @@
 # The graph API: specification
 
-Status: user-facing design agreed 2026-11-18, revising the 2026-11-02 design around kernel definitions. The host IR section is carried over from 2026-11-02 and is the starting point for implementation research, not a finished design. Code is illustrative; names are in the namespace written `sg` (`sycl::graph` in the 2026-11-02 design).
+Status: the graph around a kernel as agreed in the language pass (summary v6; decisions D15, D16, D17). 01-kernel-language.md states the kernel builder this API submits.
 
 ## 1. Purpose and scope
 
-- The graph takes data movement, ordering, allocation and lifetime out of applications and puts them in the toolchain.
-- It is a clean break from upstream SYCL. There is no `sycl::queue` anywhere in it. The graph is a recorded program that compiles to host code doing exactly what is needed.
-- The graph has no notion of convergence or of a model. Libraries built on it (CoSpan, SlabKit) own those.
+An `sg::graph` owns memory handles and the work submitted against them: device kernels, host work, and a reserved interop kind. Submissions are ordered by the roles they take on handles. A graph is built once and run any number of times; between runs only the contents of handles and the launch values change.
 
-## 2. Submission
+## 2. The graph and its handles
 
 ```cpp
-graph.submit(device, [&](auto gh) {
-  auto x = sg::array<float, 1>(x_handle, {n});
-  gh.define_kernel([=]() { ... });
+sg::graph g;
+auto x_handle = g.create_mem_handle<float>();
+auto n_handle = g.create_mem_handle<int>();
+auto y_handle = g.create_mem_handle<float>();
+
+g.submit<sg::host>([&](sg::host_handle& hh) {
+  // host work that writes the size into n_handle
 });
-graph.run();
-```
 
-- `submit` takes a device and a body that receives a graph handler.
-- A submission is exactly one piece of work: a kernel (`define_kernel`), host work (`define_host_work`), or interop work.
-- `submit` creates host IR that is JIT compiled; the submit body is itself part of the compiled host program. "Submit runs at the call site" means only that the lambda is consumed at the call site, so capturing by reference is safe. It is the definition inside that is the off-loop work.
-- Nothing executes until `run`.
-- The graph is built at run time by ordinary host code, as a builder. A host `for` loop around `submit` is one kernel definition submitted many times.
-- The graph handler is also where per-submission properties would go; none are designed.
-
-## 3. Memory handles
-
-"Graph pointer" in the 2026-11-02 design is now a **memory handle**.
-
-- A handle is created on the host, for example `sg::create_mem_handle<float>(size)`. The size is optional: a handle may start with none and be sized later by host work.
-- Handles are captured by value. In a kernel submission they are used to construct arrays: inputs in the submit scope, durable outputs in the kernel body. A handle is never used as a raw pointer in a kernel body.
-- The allocation's size and the size of an array constructed on it must match.
-- **Creating a handle reserves nothing.** The only check is that the allocation fits on at least one device, or in host memory. The sum of all allocations may far exceed any device's memory. A real allocation is made only when needed, and a failure is reported when it happens, as an async error.
-- **Allocation follows use, per device.** Nothing is allocated for a handle no work uses, and only devices that use it get a copy. When a later run no longer uses it on a device, that copy is freed.
-- **Allocation timing.** Timing matters because memory-constrained programs bring work in and out of memory: one piece of work frees while the next allocates, and other work carries on meanwhile. The timings an allocation may need are: as early as possible; once its shape is known; after an upstream free on the same device; and at submission. Choosing among them is a toolchain property and is deferred (see the README); until then the default is fixed.
-- **Frees are asynchronous and ordered.** A free is non-blocking work in the graph with its own event. A later allocation on the same device is ordered after that free's event, so it does not fail for lack of memory the free was about to return.
-- **Global tracking.** Handles are not created against a graph. Their state is tracked globally, so several graphs may run over the same handles. The runtime's global tracker owns the underlying allocations; the user owns the handle's lifetime through `free`.
-- **Events per handle.** Every piece of work that uses a handle records its event on that handle's entry in the global tracker. This is what lets `free(handle)` release memory only once the work using it has finished, lets a device copy that a later run no longer uses be freed after its last user, and lets several graphs run over the same handles. Full ordering across graphs remains future work (section 15).
-- **Slices.** A slice is a handle onto part of an allocation. Each root allocation has an overlap structure in the global tracker. Work on disjoint slices does not order against each other. Using any slice on a device allocates the whole root allocation there. `free` releases one slice; when the last is freed the root leaves tracking and its allocations are released.
-
-## 4. Kernels and ordering
-
-- A kernel submission constructs its input arrays in the submit scope and defines one kernel; see `01-kernel-language.md`.
-- **Ordering between pieces of work comes from the roles of arrays on handles and slices**: input, durable output, host read, host write. This replaces access introspection of pointer use.
-- Declaration order comes first: work whose roles conflict on the same handle runs in the order it was recorded. Shared reads do not conflict. Disjoint slices do not conflict.
-- **Several producers into one handle, without the in-place decorator,** run in declaration order and the last write wins. The toolchain warns when a write is overwritten with no consumer in between: either the decorator was forgotten or a consumer was, and the earlier work is useless.
-- Data movement between devices and the host is done by migration nodes the graph injects. They order like any other node.
-- **Old contents.** An output without the in-place decorator is fully defined by its kernel, so the handle's old contents are never brought to the device for it. Only an `inplace` output needs what the handle already holds (section 5).
-
-## 5. In-place combine across kernels
-
-This replaces `depends_on` and force-parallel from the 2026-11-02 design. It is for two or more separate submissions producing into the same handle.
-
-```cpp
-auto y = sg::array<float, 1>(sg::inplace(y_handle, std::plus<>{}), contribution_def);
-```
-
-- A durable array may be constructed with `inplace(handle, op)` in place of the handle. The decorator is in the kernel so that the kernel compiles to a combine and not a store, and so that the graph knows the submission runs alongside the other contributors.
-- Kernels that do so on the same handle are contributors. The graph does not order them against each other.
-- The result is the element-wise reduction, with `op`, of the initial value and every contributor's output.
-- The initial value is whatever an ordinary, undecorated producer left in the handle beforehand; the graph orders that producer first.
-- A reader is ordered after all contributors recorded before it. Contributors recorded after a reader accumulate on top.
-- A contributing kernel cannot read the decorated array.
-- `op` is associative and commutative; the order is unspecified.
-- Contributors to one handle must name the same operation and, for now, be on the same device. Otherwise it is an error.
-- Later, for contributors on different devices, the graph will inject a kernel after them that brings the results to one device and reduces element-wise. The meaning does not change.
-- Kernels writing to separate slices need no decorator; the user slices the allocation.
-
-## 6. Host work
-
-Ordinary asynchronous host work, integrated into the graph. It is called host work, not host task, so it is not taken for SYCL's host tasks. It works like a kernel submission, except that host work may read and write data as it wishes.
-
-```cpp
-graph.submit([&](auto gh) {
-  auto x = sg::host_array<float, 1>(x_handle, {size});        // read and write
-  auto y = sg::host_array<const float, 1>(y_handle, {size});  // read only
-  gh.define_host_work([=]() { ... });
-});
-```
-
-- **Precise access.** A `host_array` constructed in the submit scope states the access: a const element type reads, a non-const one reads and writes. The graph orders by it.
-- **Conservative access.** `sg::get_host_handle(handle)` taken in the submit scope declares that code somewhere in the host work may reallocate or mutate. It allows `realloc(size)`, with a size determined while the work runs; constructing a `host_array` on it from any scope in the host work; and `get_pointer()`. It forces the most conservative access for ordering. A `host_array` may be constructed inside host work only through a host handle.
-- Violations are async errors, since they can be deep in a call tree.
-- For now, host access to graph memory is allowed only inside host work. Arbitrary host access is explored later.
-
-```cpp
-auto data = sg::create_mem_handle<float>();
-graph.submit([&](auto gh) {
-  auto hdata = sg::get_host_handle(data);
-  gh.define_host_work([=]() {
-    hdata.realloc(size);
-    auto arr = sg::host_array<float, 1>(hdata, {size});
-    arr[0] = 1.f;
+g.submit(dev, [&](sg::kernel_handle& kh) {                // the builder itself; default kind: device kernel
+  auto n     = kh.launch_value(n_handle);                 // sg::launch_value<int>, read by the host at launch
+  auto x     = kh.source(x_handle, sg::shape<1>({n}));    // input role
+  auto items = kh.work_items({n});
+  auto y = kh.map_items(items, [=](auto item) {
+    auto v = x[item.id()];
+    return item.compute(v, [](float v) { return 2 * v + 1; });
   });
+  kh.evaluate(y_handle, y);                               // result role
 });
+
+g.run();                                                  // compiles the graph once and runs it
+g.run();                                                  // runs the same graph; only data changes
 ```
 
-## 7. Graph promise and future
+- `g.create_mem_handle<T>()` creates a handle of elements of the trivially copyable type T. Its storage comes from a slab pool of the graph, per device, that grows with need: it starts empty and takes a slab from the device when no free block may be used (`pool_reservation_bytes` only pre-sizes it); every allocation is 256-byte aligned. A free block is reused only when that adds no ordering the graph did not already have, otherwise the pool grows. A handle's size is bound per run and may grow from run to run; a request the device refuses is an error naming the handle and the size.
+- The submit lambda is the builder; it runs at submit, exactly once. `kh.source(handle, sg::shape<N>)` declares an input and returns the array as elements; `kh.evaluate(handle, elements)` or `kh.evaluate(sg::inplace(handle, op, init), elements)` declares a result.
+- `g.submit` takes the work kind as a template argument: a device kernel by default (`g.submit(dev, builder(sg::kernel_handle&))`), `sg::host` (`g.submit<sg::host>(fn(sg::host_handle&))`), and `sg::interop`.
+- `g.run()` does not block; `g.wait()` waits for everything issued.
 
-A host-only primitive of the graph, for a value host work computes that later submissions need, such as a size that comes from data.
+## 3. Roles and ordering
 
-- The pair is created on the host, like a memory handle. It carries one plain value.
-- Host work takes the promise in its submit scope, which declares it the producer, and sets it.
-- A later submission reads the future in its submit scope, wherever a launch value is allowed: an array's shape, a range, a group shape, a chain's layer count.
-- Reading it is the dependency. The graph orders that submission after the producer. There is no explicit wait and no run boundary.
-- To a kernel it is an ordinary launch value: a placeholder resolved by the host program just before that launch. For hashing and caching it is a bound value, not structure.
-- Async errors: a future read with no producer recorded before it; a promise set twice or never.
+A handle is a source or a result of one kernel, not both; a source and a result on one handle in one kernel is a build error naming the handle. Roles feed the dependency tracker: for the handle roles read, write and inplace the tracker orders nodes with read-after-write, write-after-read and write-after-write between kernel and host nodes, and returns the events each node waits on. The host work, kernel and host work nodes of one graph run in role order on every run.
 
-## 8. Interop
+- Inplace contributors on one handle form a group: they do not order against each other and combine each element atomically (B2 of 01-kernel-language.md).
+- Runs may be issued back to back on one out-of-order retargetable queue and are ordered by handle roles; one `g.wait()` at the end covers all of them.
+- Copies between host and device and between devices are planned from placement; a host buffer is kept alive until the completion event of the last copy that uses it.
 
-Users may interop with vendor libraries. Interop work is essentially a host work definition, with interop handles that give access to native objects. Supporting it is a goal, but it is not designed further yet; the current focus is host work and kernel definitions.
+## 4. Host work
 
-## 9. Graph cycle
+`g.submit<sg::host>(fn)` runs `fn(sg::host_handle& hh)` at submit. The function declares the arrays the host work touches: `hh.write(handle, sg::shape<N>({...}))` and `hh.read(handle, sg::shape<N>({...}))` return arrays whose address is bound when the work runs; `hh.run(callable)` is the work itself and executes asynchronously on every run, ordered by its roles. Host work may write any handle, including the handles that hold launch values.
 
-A cycle exists at two levels, and it is the same abstract primitive at both. The in-kernel cycle (`01-kernel-language.md`, section 10) repeats inside one launch. The graph cycle repeats a set of submissions. In CoSpan's terms the first is like an implicit component and the second like a solver over a system of components, but neither is tied to solving systems.
+## 5. Launch values
 
-- The graph is built by ordinary host code, so repetition with a count the host already knows needs no primitive: it is a host loop that calls `submit`. The graph cycle is for repetition whose stop condition is only known while the graph runs.
-- A graph cycle is a composite node inside the one compiled graph. Its condition check is host work. The cycle never blocks downstream work that does not depend on it.
-- A composite has many events in and one event out; its roles on handles are the union of its inner nodes'. Composites nest.
-- **Conditional nodes.** What a graph cycle issues depends on a condition only known while the graph runs, so its nodes are conditional nodes, as designed on 2026-11-02. They exist every run, each gated by a flag, so taking a different path never recompiles. A conditional node that is skipped signals its event directly, so its dependents see a valid event either way. Flags are tagged per run. The gating mechanism is per backend.
-- Handles carried from one iteration to the next are runtime arguments, tracked at run time.
-- **Hard stop (default):** each next iteration waits for the condition, then continues or exits.
-- **Speculative (opt-in):** iterations keep being submitted while the condition is checked, up to a throttle. Iterations already in flight past the exit still complete.
+`kh.launch_value(handle)` returns `sg::launch_value<T>`: a number the host reads from the handle just before the node launches, on every run, after the work that produces it has completed. Any work may write the handle. A launch value is a bound value: `+ - * / %` between launch values and integers give bound expressions, accepted where a size, count, grid extent, work-item range, repeat count or slice extent is taken. It never converts to T and never shapes structure: using a launch value as a tile shape extent, a run length, a loop bound or an array extent of the builder is a compile error naming `launch_value<T>` and structure (rejection 8). The selections of a kernel are recomputed only when a launch value they depend on changes.
 
-## 10. Running, identity and caching
+## 6. Running, rerunning and compiled code
 
-- `run` executes the recorded graph and clears the recording, so later submissions build a new graph. This is what makes graphs dynamic from run to run.
-- `run` does not block: it issues the graph's work and returns, so graphs run back to back. It probably returns an event; that is not settled.
-- If the new graph is identical to a previous one, the compiled program is reused.
-- Identity is a structural hash built as nodes are added: the operations and their edges. Sizes, launch values, graph futures and which handles are bound are bound values. They are not in the hash and changing them does not recompile the host program.
-- `graph.wait()` waits for a graph to finish. Destroying a graph waits only for that graph's work in flight.
-- The persistent graph cache lives beside AdaptiveCpp's persistent kernel cache, keyed by the structural hash, holding compiled host code.
+The first run binds sizes, evaluates the selections of every unit, orders the native groups, builds the tables, composes the kernel and launches. Later runs rebind addresses and launch values, recompute only the selections and tables that depend on changed launch values, clear the counters and flags in queue order before each launch and launch the same compiled kernel. The composition of a kernel is its ordered list of task functions; nothing else about a graph (addresses, sizes, selections, launch values) is part of the identity of the compiled kernel. `sg::jit_compile_count()` returns the number of stage-2 JIT compilations the process has performed so far; a rerun with other data and other launch values leaves it unchanged.
 
-## 11. Errors
+## 7. Options
 
-- Errors while `run` is issuing work, including every launch-time validation in `01-kernel-language.md`, are thrown immediately.
-- Errors while work executes are async errors, delivered through an async handler as in SYCL: runtime errors in kernels, allocation failures, exceptions thrown by host work, host work violations, promise and future misuse.
+`sg::graph_options` has `pool_reservation_bytes` (what the slab pool of each device takes at its first use; default 0, an empty pool that grows) and `group_size_cap`: the largest native group a kernel of the graph may use; the default (0) is the device's maximum work-group size, and the cap is part of what rejection 1 reports.
 
-## 12. Reporting
+## 8. A graph is built once
 
-`graph.report()` gives, after a run, what the toolchain derived and chose, in terms of the user's constructs. The per-kernel content is listed in `01-kernel-language.md`, section 13.
+A submit after the first run is a build error naming the graph as already built. Changing a graph's structure is a separate operation that is not designed yet; until it is, a new graph object is made. There is no key to compute and nothing to hash: the structure is the recorded kernel graph itself.
 
-## 13. Host IR (carried over from 2026-11-02)
+## 9. Interop
 
-This is the design as it stood, restated in the current vocabulary. It is the starting point for the implementation research.
+`g.submit<sg::interop>(...)` is declared and reserved. It compiles and raises a build error naming `sg::interop` as not designed (rejection 15 of 01-kernel-language.md).
 
-- **Pipeline.** Nodes and their ordering, then one complete IR, then compiled host and device code, then execution. All IR is composed into one program and compiled in one go, so the compiler optimises the whole host program. The runtime generates IR as well as compiling it. Host JIT uses standard LLVM JIT interfaces.
-- **Every operation is a node and every node is non-blocking:** kernels, host work, interop, copies, migration, allocation and free.
-- **A node is a composition of primitives that each generate IR:** the body, the launch operation, a vendor-erased event, the arguments and the edges. For a kernel the body is device IR: our compiler transpiles the kernel definition to a native SYCL kernel, which AdaptiveCpp compiles and JIT-lowers as today. The launch operation is host code that launches the body natively, supplied by the vendor runtime as host IR.
-- **Vendor boundary.** The core runtime knows nothing about vendor internals. Vendor runtime libraries implement a strict interface returning vendor-erased primitives, plus lower-level interfaces for composing them into nodes. Vendor runtimes ship pre-generated host IR for what never changes, such as launching a kernel; the kernel and its launch configuration are arguments to it.
-- **Stitching** is mechanical, in node order. Each node exposes an event and its dependents consume it. Injected nodes chain as needed: producer, then allocation on the target device, then copy, then the work. An event dependency becomes native stream ordering when both ends are on the same platform, and a vendor-agnostic fallback otherwise.
-- **Arrays in kernels.** The kernel gets an argument slot per array. The launch code fills it each run with the current device address of the bound handle. Moving memory never recompiles.
-- **Launch values** are placeholders in the kernel IR, resolved and validated by the host program before the launch.
-- **Host work** is JIT-compiled as part of the program and run with `std::async` for now, with a future behind a vendor-erased event. Interop work is the exception: a precompiled function the program calls.
-- **A graph cycle** lowers to a loop in the compiled host code, with its conditional nodes gated per backend.
+## 10. Errors
 
-Flagged in 2026-11-02 and never worked out:
+Every rejection of the language raises `sg::build_error`: a rule number, a construct name, a source location and named numbers; its text is `<construct> at <file>:<line>: <explanation> (name = value, ...)`. The catalogue of fifteen rejections is in section 10 of 01-kernel-language.md. Errors of the graph that are not rules of the language (a handle read before anything produced it, mismatched element types, an allocation the device refuses, a submit after the first run) are `sg::error` with a code and a message naming the handle.
 
-- The runtime needs LLVM available to JIT host code.
-- Host work bodies and vendor launch code must exist as IR at run time, so the application has to carry host IR.
+## 11. Decisions
 
-## 14. What changed from 2026-11-02
-
-| 2026-11-02 | Now |
+| id | decision |
 |---|---|
-| `sycl::graph::pointer<T>` behaving as a raw pointer in kernels; pointer rules for analysis | Memory handles; arrays constructed on them; never a raw pointer in a kernel |
-| Ordering by introspected reads and writes of pointers | Ordering by array roles |
-| Kernel bodies are plain SYCL with a launch range | Kernel definitions; no range or group shape on the kernel |
-| `depends_on` and force-parallel | In-place combine; declaration order with a warning otherwise |
-| `lock` as host access from outside the graph | Host access only inside host work for now |
-| Device-sourced sizes through graph calls in host nodes | Host handles with `realloc`, and graph promise and future |
-| Host-evaluated calls | Set aside, as the requirement "IR primitives for libraries" |
-| Fusion | Set aside |
-| Loop composite | Graph cycle; the conditional node machinery stays |
-
-## 15. Open for research or later discussion
-
-- The exact form of a graph cycle's body and stop condition.
-- What a host work submission takes in place of a device.
-- The design of interop work.
-- Cross-graph ordering, what `run` returns (probably an event), better host execution than `std::async`, vendor-native graph cycle lowering: future work as in 2026-11-02.
+| D15 | The submit lambda is the kernel builder directly; kh.source declares inputs, kh.evaluate takes the result handle or sg::inplace(...); a graph is built once and the first run compiles it. |
+| D16 | Any work in the graph (host work, kernels) may produce a value read at launch; such values are bound values only and never structure. |
+| D17 | The deferred host read is kh.launch_value(handle) returning sg::launch_value<T>; graph.submit takes the work kind as a template argument, default a device kernel. |
