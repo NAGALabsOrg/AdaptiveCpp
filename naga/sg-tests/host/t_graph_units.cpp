@@ -100,6 +100,10 @@ BOOST_AUTO_TEST_CASE(k1_sets_and_slices) {
   BOOST_CHECK(pk->works[1].slice && pk->works[2].slice);
   const tile_graph tg = build_tile_graph(*pk);
   BOOST_CHECK_EQUAL(tg.groups.size(), 16u);
+  BOOST_CHECK_EQUAL(pk->works[1].root, 0);
+  BOOST_CHECK_EQUAL(pk->works[2].root, 0);
+  for (const auto &group : tg.groups)
+    BOOST_CHECK_EQUAL(group.work, 0);
 }
 
 BOOST_AUTO_TEST_CASE(k6_segmented_form_is_2048_groups_of_16x16x4) {
@@ -125,6 +129,10 @@ BOOST_AUTO_TEST_CASE(k14_at_cap_256_is_256_groups_of_256) {
   const tile_graph tg = build_tile_graph(*pk);
   BOOST_CHECK_EQUAL(tg.groups.size(), 256u);
   BOOST_CHECK_EQUAL(pk->native_size, 256);
+  BOOST_CHECK_EQUAL(pk->works[0].tile_rank, 1);
+  BOOST_CHECK_EQUAL(pk->works[0].tile[0], 1);
+  BOOST_CHECK_EQUAL(pk->works[0].segs, 4);
+  BOOST_CHECK_EQUAL(pk->works[0].ips, 256);
 }
 
 BOOST_AUTO_TEST_CASE(a_work_tile_above_the_cap_is_rejected) {
@@ -375,6 +383,18 @@ BOOST_AUTO_TEST_CASE(k6_marks_the_bands_and_shares_the_segmented_partials) {
     BOOST_REQUIRE_GT(dev::header_of(block).n_tickets, 0u);
     for (std::uint32_t t = 0; t < dev::header_of(block).n_tickets; ++t)
       BOOST_CHECK_EQUAL(tickets[t].n_copies, 2u);
+    int array_marks = 0;
+    for (const mark_rec &mk : pk->graph.marks)
+      array_marks += mk.kind == mark_kind::array_tiles ? 1 : 0;
+    BOOST_CHECK_EQUAL(array_marks, 2);
+    const dev::copy_rec *copies = dev::copies_of(block);
+    for (std::uint32_t t = 0; t < dev::header_of(block).n_tickets; ++t) {
+      const dev::copy_rec &a_band = copies[tickets[t].first_copy];
+      const dev::copy_rec &b_band = copies[tickets[t].first_copy + 1];
+      BOOST_CHECK_EQUAL(a_band.elems, 16u * 128u);
+      BOOST_CHECK_EQUAL(b_band.elems, 128u * 16u);
+      BOOST_CHECK_NE(a_band.local_off, b_band.local_off);
+    }
   }
   rig r2;
   auto a2 = h_of<int>(r2), b2 = h_of<int>(r2), c2 = h_of<int>(r2);

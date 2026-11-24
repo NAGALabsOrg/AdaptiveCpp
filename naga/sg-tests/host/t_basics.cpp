@@ -47,6 +47,11 @@ BOOST_AUTO_TEST_CASE(the_graph_example_orders_host_work_before_the_kernel) {
   BOOST_CHECK(std::find(deps.begin(), deps.end(), 1u) != deps.end());
   BOOST_CHECK(std::find(deps.begin(), deps.end(), 2u) != deps.end());
   BOOST_CHECK_EQUAL(r.ops->log.back(), "launch");
+  // nothing waits on the kernel: its operation is the last one and no host node lists it
+  const auto launch_id = r.ops->next;
+  for (const auto &h : r.ops->hosts)
+    BOOST_CHECK(std::find(h.deps.begin(), h.deps.end(), launch_id) == h.deps.end());
+  BOOST_CHECK(std::all_of(deps.begin(), deps.end(), [&](auto d) { return d < launch_id; }));
 }
 
 BOOST_AUTO_TEST_CASE(a_read_before_any_producer_is_an_error) {

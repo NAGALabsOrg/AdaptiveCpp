@@ -5,7 +5,7 @@ The terms of the kernel language and of the graph around it, with the names of s
 ## 1. Terms of the language
 
 ### work tile
-One native work-group (W1). A work tile is fixed: it never moves between groups. Its native shape is the tile shape followed by the run, at most 3-D.
+One or more native work-groups, chosen at construction (W1); on a segmented work set there is one native group per segment. A work tile is fixed: it never moves between groups. Its native shape is the tile shape followed by the run, at most 3-D.
 
 ### work set
 The work tiles made by one `kh.work_tiles` call, or a slice of one made by `kh.slice_work`. A kernel has any number of work sets; another set, of any shape, is a parallel set of groups.

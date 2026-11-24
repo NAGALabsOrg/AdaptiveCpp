@@ -168,8 +168,10 @@ BOOST_AUTO_TEST_CASE(float64_where_the_device_has_it) {
 
 BOOST_AUTO_TEST_CASE(the_two_by_two_matrix_product_is_combined_left_to_right) {
   for (int run : {2, 5, 64, 100}) {
-    if (run > max_group())
+    if (run > max_group()) {
+      BOOST_TEST_MESSAGE("SKIPPED run " << run << ": the device's largest work-group is " << max_group());
       continue;
+    }
     check_case<M2, matmul_op, false>(run, 3, 1);
     check_case<M2, matmul_op, true>(run, 3, 1);
   }

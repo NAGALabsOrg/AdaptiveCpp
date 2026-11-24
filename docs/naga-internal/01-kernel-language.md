@@ -53,7 +53,7 @@ Elements and tiles are explicit types (D3). `kh.tile` turns elements into tiles,
 
 ## 4. Work: tiles, units, runs, items
 
-A work tile is one native work-group, fixed (W1). Each `kh.work_tiles` call is an explicit set of native groups; another set, of any shape, is a parallel set. Using the same work set again uses the same groups; slicing a work set with `kh.slice_work` reuses a subset of its groups, possibly for a sub-problem of a different shape (W1, D6).
+A work tile is one or more native work-groups, chosen at construction and fixed (W1); on a segmented work set there is one native group per segment. Each `kh.work_tiles` call is an explicit set of native groups; another set, of any shape, is a parallel set. Using the same work set again uses the same groups; slicing a work set with `kh.slice_work` reuses a subset of its groups, possibly for a sub-problem of a different shape (W1, D6).
 
 - The run is an extra dimension: the native group shape is tile shape ++ run, at most 3-D; a 3-D tile has a run of one item and takes no run argument (W9).
 - One launch has one native group size, the largest in the kernel; smaller work tiles leave native work-items unused (W8).

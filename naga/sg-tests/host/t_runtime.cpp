@@ -111,9 +111,16 @@ BOOST_AUTO_TEST_CASE(a_staged_copy_chains_its_legs_and_the_buffer_outlives_the_c
   BOOST_CHECK(up.src == down.dst);
   BOOST_CHECK(std::find(up.deps.begin(), up.deps.end(), down.id) != up.deps.end());
   // the staging buffer is released only after the queue has drained
+  BOOST_CHECK_EQUAL(r.mem->released, 0);
+  BOOST_CHECK_EQUAL(r.ops->wait_all_calls, 0);
   r.g->wait();
   BOOST_CHECK_EQUAL(r.mem->released, 1);
   BOOST_CHECK_EQUAL(r.mem->wait_alls_at_release, 1);
+  const auto &queue_log = r.ops->log;
+  const auto last_copy = std::find(queue_log.rbegin(), queue_log.rend(), std::string("copy"));
+  const auto drained = std::find(queue_log.rbegin(), queue_log.rend(), std::string("wait_all"));
+  BOOST_REQUIRE(last_copy != queue_log.rend() && drained != queue_log.rend());
+  BOOST_CHECK(drained < last_copy);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -266,6 +273,18 @@ BOOST_AUTO_TEST_CASE(every_kernel_encodes_and_decodes_to_the_same_task_lists) {
       }
     }
     BOOST_CHECK_MESSAGE(seen == h.n_tasks, k.name);
+    const auto base = reinterpret_cast<std::uintptr_t>(b);
+    const auto section_aligned = [&](std::uint64_t off, std::size_t alignment) {
+      return (base + off) % alignment == 0;
+    };
+    BOOST_CHECK_MESSAGE(section_aligned(h.off_tickets, alignof(dev::ticket_rec)), k.name);
+    BOOST_CHECK_MESSAGE(section_aligned(h.off_tasks, alignof(dev::task_rec)), k.name);
+    BOOST_CHECK_MESSAGE(section_aligned(h.off_waits, alignof(std::uint32_t)), k.name);
+    BOOST_CHECK_MESSAGE(section_aligned(h.off_copies, alignof(dev::copy_rec)), k.name);
+    BOOST_CHECK_MESSAGE(section_aligned(h.off_views, alignof(std::remove_cvref_t<decltype(*dev::views_of(b))>)), k.name);
+    BOOST_CHECK_MESSAGE(section_aligned(h.off_sels, alignof(dev::sel_rec)), k.name);
+    BOOST_CHECK_MESSAGE(section_aligned(h.off_item_tasks, alignof(dev::item_task_rec)), k.name);
+    BOOST_CHECK_MESSAGE(base % alignof(dev::block_header) == 0, k.name);
     // every section starts on a 16-byte boundary and every record size is a multiple of 8
     for (std::uint64_t off : {h.off_tickets, h.off_tasks, h.off_waits, h.off_copies, h.off_views, h.off_sels,
                               h.off_item_tasks, h.off_closures, h.off_tables})
@@ -288,6 +307,94 @@ BOOST_AUTO_TEST_CASE(sub_word_fields_are_naturally_aligned) {
   static_assert(offsetof(dev::item_task_rec, closure) % 8 == 0);
   static_assert(offsetof(dev::item_input_rec, off) % 8 == 0);
   static_assert(offsetof(dev::block_header, flags) % 8 == 0);
+#define SGT_FIELD_ALIGNED(record, field) \
+  static_assert(offsetof(record, field) % alignof(decltype(record::field)) == 0, #record "::" #field)
+  SGT_FIELD_ALIGNED(dev::block_header, magic);
+  SGT_FIELD_ALIGNED(dev::block_header, n_tickets);
+  SGT_FIELD_ALIGNED(dev::block_header, n_tasks);
+  SGT_FIELD_ALIGNED(dev::block_header, n_item_tasks);
+  SGT_FIELD_ALIGNED(dev::block_header, n_regs_bytes);
+  SGT_FIELD_ALIGNED(dev::block_header, n_items);
+  SGT_FIELD_ALIGNED(dev::block_header, items_ext);
+  SGT_FIELD_ALIGNED(dev::block_header, items_rank);
+  SGT_FIELD_ALIGNED(dev::block_header, pad0);
+  SGT_FIELD_ALIGNED(dev::block_header, off_tickets);
+  SGT_FIELD_ALIGNED(dev::block_header, off_tasks);
+  SGT_FIELD_ALIGNED(dev::block_header, off_waits);
+  SGT_FIELD_ALIGNED(dev::block_header, off_copies);
+  SGT_FIELD_ALIGNED(dev::block_header, off_views);
+  SGT_FIELD_ALIGNED(dev::block_header, off_sels);
+  SGT_FIELD_ALIGNED(dev::block_header, off_item_tasks);
+  SGT_FIELD_ALIGNED(dev::block_header, off_closures);
+  SGT_FIELD_ALIGNED(dev::block_header, off_tables);
+  SGT_FIELD_ALIGNED(dev::block_header, n_flags);
+  SGT_FIELD_ALIGNED(dev::block_header, pad1);
+  SGT_FIELD_ALIGNED(dev::ticket_rec, first_task);
+  SGT_FIELD_ALIGNED(dev::ticket_rec, n_tasks);
+  SGT_FIELD_ALIGNED(dev::ticket_rec, first_copy);
+  SGT_FIELD_ALIGNED(dev::ticket_rec, n_copies);
+  SGT_FIELD_ALIGNED(dev::copy_rec, view);
+  SGT_FIELD_ALIGNED(dev::copy_rec, local_off);
+  SGT_FIELD_ALIGNED(dev::copy_rec, tile);
+  SGT_FIELD_ALIGNED(dev::copy_rec, elems);
+  SGT_FIELD_ALIGNED(dev::copy_rec, elem_bytes);
+  SGT_FIELD_ALIGNED(dev::copy_rec, pad);
+  SGT_FIELD_ALIGNED(dev::sel_rec, view);
+  SGT_FIELD_ALIGNED(dev::sel_rec, local_off);
+  SGT_FIELD_ALIGNED(dev::sel_rec, tile);
+  SGT_FIELD_ALIGNED(dev::sel_rec, off);
+  SGT_FIELD_ALIGNED(dev::sel_rec, ext);
+  SGT_FIELD_ALIGNED(dev::sel_rec, len);
+  SGT_FIELD_ALIGNED(dev::task_rec, task_id);
+  SGT_FIELD_ALIGNED(dev::task_rec, flag);
+  SGT_FIELD_ALIGNED(dev::task_rec, first_wait);
+  SGT_FIELD_ALIGNED(dev::task_rec, n_waits);
+  SGT_FIELD_ALIGNED(dev::task_rec, first_sel);
+  SGT_FIELD_ALIGNED(dev::task_rec, n_inputs);
+  SGT_FIELD_ALIGNED(dev::task_rec, n_units);
+  SGT_FIELD_ALIGNED(dev::task_rec, run_kind);
+  SGT_FIELD_ALIGNED(dev::task_rec, result_kind);
+  SGT_FIELD_ALIGNED(dev::task_rec, stride);
+  SGT_FIELD_ALIGNED(dev::task_rec, run_len);
+  SGT_FIELD_ALIGNED(dev::task_rec, seg);
+  SGT_FIELD_ALIGNED(dev::task_rec, segs);
+  SGT_FIELD_ALIGNED(dev::task_rec, ips);
+  SGT_FIELD_ALIGNED(dev::task_rec, rounds);
+  SGT_FIELD_ALIGNED(dev::task_rec, tile_idx);
+  SGT_FIELD_ALIGNED(dev::task_rec, out_bytes);
+  SGT_FIELD_ALIGNED(dev::task_rec, bins);
+  SGT_FIELD_ALIGNED(dev::task_rec, out_flags);
+  SGT_FIELD_ALIGNED(dev::task_rec, local_out_off);
+  SGT_FIELD_ALIGNED(dev::task_rec, out_global);
+  SGT_FIELD_ALIGNED(dev::task_rec, out_tile_elems);
+  SGT_FIELD_ALIGNED(dev::task_rec, eval_addr);
+  SGT_FIELD_ALIGNED(dev::task_rec, eval_grid);
+  SGT_FIELD_ALIGNED(dev::task_rec, eval_shape);
+  SGT_FIELD_ALIGNED(dev::task_rec, eval_extent);
+  SGT_FIELD_ALIGNED(dev::task_rec, closure);
+  SGT_FIELD_ALIGNED(dev::task_rec, closure_bytes);
+  SGT_FIELD_ALIGNED(dev::task_rec, partial_stride);
+  SGT_FIELD_ALIGNED(dev::task_rec, partial_addr);
+  SGT_FIELD_ALIGNED(dev::task_rec, unit_grid);
+  SGT_FIELD_ALIGNED(dev::task_rec, pad);
+  SGT_FIELD_ALIGNED(dev::item_input_rec, kind);
+  SGT_FIELD_ALIGNED(dev::item_input_rec, view);
+  SGT_FIELD_ALIGNED(dev::item_input_rec, reg);
+  SGT_FIELD_ALIGNED(dev::item_input_rec, bytes);
+  SGT_FIELD_ALIGNED(dev::item_input_rec, off);
+  SGT_FIELD_ALIGNED(dev::item_task_rec, task_id);
+  SGT_FIELD_ALIGNED(dev::item_task_rec, n_inputs);
+  SGT_FIELD_ALIGNED(dev::item_task_rec, out_reg);
+  SGT_FIELD_ALIGNED(dev::item_task_rec, out_bytes);
+  SGT_FIELD_ALIGNED(dev::item_task_rec, closure_bytes);
+  SGT_FIELD_ALIGNED(dev::item_task_rec, eval);
+  SGT_FIELD_ALIGNED(dev::item_task_rec, sink);
+  SGT_FIELD_ALIGNED(dev::item_task_rec, pad);
+  SGT_FIELD_ALIGNED(dev::item_task_rec, closure);
+  SGT_FIELD_ALIGNED(dev::item_task_rec, eval_addr);
+  SGT_FIELD_ALIGNED(dev::item_task_rec, eval_extent);
+  SGT_FIELD_ALIGNED(dev::item_task_rec, in);
+#undef SGT_FIELD_ALIGNED
   BOOST_CHECK(true);
 }
 
