@@ -221,7 +221,8 @@ kernel_adaptivity_engine::finalize_binary_configuration(
         glue::sscp::composition_config_kernel_property_t value;
         std::memcpy(&value, _arg_mapper.get_mapped_args()[i], arg_size);
         configure_composition_kernel(config, i, value, std::string{_kernel_name},
-                                     _local_mem_size);
+                                     _local_mem_size, _block_size[0],
+                                     _block_size[1], _block_size[2]);
         composed = true;
       }
     }

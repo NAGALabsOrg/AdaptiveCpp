@@ -26,12 +26,22 @@ namespace rt {
 inline void configure_composition_kernel(
     kernel_configuration &config, int param_index,
     glue::sscp::composition_config_kernel_property_t property,
-    const std::string &kernel_name, std::size_t local_mem_size) {
+    const std::string &kernel_name, std::size_t local_mem_size,
+    std::size_t group_size_x = 0, std::size_t group_size_y = 0,
+    std::size_t group_size_z = 0) {
   config.set_composition_config(param_index, property);
   config.append_base_configuration(kernel_base_config_parameter::single_kernel,
                                    kernel_name);
   config.set_build_option(kernel_build_option::known_local_mem_size,
                           local_mem_size);
+  if (group_size_x > 0 && group_size_y > 0 && group_size_z > 0) {
+    config.set_build_option(kernel_build_option::known_group_size_x,
+                            group_size_x);
+    config.set_build_option(kernel_build_option::known_group_size_y,
+                            group_size_y);
+    config.set_build_option(kernel_build_option::known_group_size_z,
+                            group_size_z);
+  }
 }
 
 } // namespace rt
