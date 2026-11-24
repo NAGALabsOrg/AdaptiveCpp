@@ -4,7 +4,7 @@
 
 #include "hipSYCL/sg/detail/bound_block.hpp"
 #include "hipSYCL/sg/detail/device_ops.hpp"
-#include "hipSYCL/sg/detail/kernel_preparer.hpp"
+#include "hipSYCL/sg/detail/launch_plan.hpp"
 #include "hipSYCL/sg/detail/memory_manager.hpp"
 
 #include <cstring>
@@ -16,9 +16,10 @@ namespace sg::detail {
 class launch_service {
 public:
   virtual ~launch_service() = default;
-  virtual op_id launch(int device, const prepared_kernel &, const std::vector<slot_binding> &,
-                       const std::vector<std::uint64_t> &result_address_by_layer,
-                       const placement &toolchain, const std::vector<op_id> &deps) = 0;
+  // Uploads the plan's block into the toolchain region, clears the flags, launches.
+  virtual op_id launch(int device, const launch_plan &, const placement &toolchain,
+                       const hipsycl::glue::sscp::composition_config *config,
+                       const std::vector<op_id> &deps) = 0;
   virtual void release_finished() = 0;
 };
 
@@ -26,43 +27,30 @@ class launcher final : public launch_service {
 public:
   explicit launcher(device_ops &ops) : ops_(ops) {}
 
-  op_id launch(int device, const prepared_kernel &k, const std::vector<slot_binding> &by_slot,
-               const std::vector<std::uint64_t> &result_address_by_layer,
-               const placement &toolchain, const std::vector<op_id> &deps) override {
-    const launch_plan &p = k.plan;
-    if (p.grid == 0)
+  op_id launch(int device, const launch_plan &p, const placement &toolchain,
+               const hipsycl::glue::sscp::composition_config *config, const std::vector<op_id> &deps) override {
+    if (!p.items && p.groups == 0)
+      return ops_.host_task([] {}, deps);
+    if (p.items && p.n_items == 0)
       return ops_.host_task([] {}, deps);
 
-    auto staging = std::make_shared<std::vector<std::byte>>(build_bound_block(
-        *k.tree, p, by_slot, result_address_by_layer,
-        reinterpret_cast<std::uint64_t>(toolchain.mem.ptr)));
-    kept_.push_back({staging, k.tree});
+    auto staging = std::make_shared<std::vector<std::byte>>(p.block);
+    kept_.push_back(staging);
 
     std::byte *block = static_cast<std::byte *>(toolchain.mem.ptr);
-    const op_id u = ops_.copy(device, block, staging->data(), p.bound_block_bytes, deps);
+    const op_id u = ops_.copy(device, block, staging->data(), staging->size(), deps);
     std::vector<op_id> after{u};
     if (p.flag_words > 0)
-      after.push_back(ops_.fill(device, block + p.flags_byte_offset,
-                                std::vector<std::byte>(4, std::byte{0}), p.flag_words, deps));
-
-    kernel_launch_desc d;
-    d.groups = p.grid;
-    d.work_group_size = p.work_group_size;
-    d.local_bytes = p.local_bytes;
-    std::memcpy(&d.ctx, staging->data(), sizeof(d.ctx));
-    d.config = k.tree->config.get();
-    return ops_.launch(device, d, after);
+      after.push_back(ops_.fill(device, block + p.flags_byte_offset, std::vector<std::byte>(4, std::byte{0}),
+                                p.flag_words, deps));
+    return ops_.launch(device, make_launch_desc(p, reinterpret_cast<std::uintptr_t>(block), config), after);
   }
 
   void release_finished() override { kept_.clear(); }
 
 private:
-  struct keep {
-    std::shared_ptr<std::vector<std::byte>> bytes;
-    std::shared_ptr<kernel_tree> tree;
-  };
   device_ops &ops_;
-  std::vector<keep> kept_;
+  std::vector<std::shared_ptr<std::vector<std::byte>>> kept_;
 };
 
 } // namespace sg::detail
