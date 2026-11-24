@@ -5,10 +5,14 @@
 #include <cstddef>
 
 namespace sg {
-// 0: the pool reservation follows the limit rule, per device.
+
 struct graph_options {
+  // Bytes each device's memory pool takes at its first use. 0: the pool starts empty and grows with need.
   std::size_t pool_reservation_bytes = 0;
+  // 0: the device's maximum work-group size. The largest native group of a kernel.
+  std::size_t group_size_cap = 0;
 };
+
 } // namespace sg
 
 #endif
