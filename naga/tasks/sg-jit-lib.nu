@@ -1,8 +1,26 @@
-# Pure helpers of the sg layer-call measurement: classify runs, parse bench
-# lines, measure IR dumps, aggregate repetitions and render the report.
+# Pure helpers of the sg chain measurement: classify runs, parse bench lines, measure
+# IR dumps, aggregate repetitions and compute the 30-over-10 ratios.
 
 const ir_begin = ";---------------- Begin AdaptiveCpp IR dump --------------"
 const ir_end = ";----------------- End AdaptiveCpp IR dump ---------------"
+
+export def mask-of [backend: string] {
+  match $backend {
+    "omp" => "omp"
+    "cuda" => "omp;cuda"
+    "ocl" => "ocl"
+    "ze" => "ze"
+  }
+}
+
+# The environment that switches a backend's driver cache off; a record for every backend.
+export def cache-env [backend: string] {
+  match $backend {
+    "cuda" => {CUDA_CACHE_DISABLE: "1"}
+    "ocl" | "ze" => {NEO_CACHE_PERSISTENT: "0"}
+    _ => ({x: 0} | reject x)
+  }
+}
 
 def num [v: any] {
   if $v == null { return null }
@@ -25,9 +43,10 @@ def med [xs: list] {
   }
 }
 
+# pass, crash (killed by a signal), timeout (124), fail (the result line says ok=0), error
 export def classify-run [exit_code: int, bench_line: string] {
   if $exit_code == 124 {
-    "infeasible"
+    "timeout"
   } else if $exit_code >= 128 {
     "crash"
   } else if $exit_code == 0 and ($bench_line | str contains "ok=1") {
@@ -41,7 +60,7 @@ export def classify-run [exit_code: int, bench_line: string] {
 
 export def parse-bench-line [line: string] {
   let toks = ($line | str trim | split row ' ')
-  if ($toks | first) != "sg_jit_bench" or ($toks | length) != 7 {
+  if ($toks | first) != "sg_chain_bench" or ($toks | length) != 4 {
     error make {msg: $"malformed bench line: ($line)"}
   }
   let kv = ($toks | skip 1 | each {|t|
@@ -54,14 +73,10 @@ export def parse-bench-line [line: string] {
     if ($m | is-empty) { error make {msg: $"malformed bench line: ($line)"} }
     $m | first | get v
   }
-  let big = (do $get "big_ms")
   {
-    case: (do $get "case")
+    n: (do $get "n" | into int)
     ok: (do $get "ok" | into int)
     cold_ms: (do $get "cold_ms" | into float)
-    warm_ms: (do $get "warm_ms" | into float)
-    big_ms: (if $big == "NA" { null } else { $big | into float })
-    rejit: (do $get "rejit" | into int)
   }
 }
 
@@ -90,141 +105,58 @@ export def ir-metrics [dump: string] {
   {functions: $defs, lines: $best_lines}
 }
 
-export def layer-call-sites [dump: string] {
-  let ls = ($dump | lines)
-  let groups = ($ls
-    | parse --regex '^attributes #(?<k>\d+) = \{(?<body>.*)\}'
-    | where {|r| $r.body =~ '\bnoinline\b' }
-    | each {|r| $r.k })
-  let calls = ($ls | where {|l| $l =~ 'call ' and $l =~ '@__sg_drv_(owner|compute|resolve_layer)\.l\d+\(' })
-  let marked = ($calls | where {|l|
-    let m = ($l | parse --regex ' #(?<k>\d+)\s*$')
-    ($m | is-not-empty) and (($m | first | get k) in $groups)
-  })
-  {total: ($calls | length), noinline: ($marked | length)}
-}
-
+# One row per (backend, n): the status (the first that is not pass), the median cold time and the
+# median line count of the final IR over the passing repetitions.
 export def aggregate-reps [rows: table] {
-  let keys = ($rows | select backend case | uniq)
+  let keys = ($rows | select backend n | uniq)
   $keys | each {|k|
-    let reps = ($rows | where {|r| $r.backend == $k.backend and $r.case == $k.case })
+    let reps = ($rows | where {|r| $r.backend == $k.backend and $r.n == $k.n })
     let nonpass = ($reps | each {|r| $r.status } | where {|s| $s != "pass" })
     let status = (if ($nonpass | is-empty) { "pass" } else { $nonpass | first })
     let passing = ($reps | where {|r| $r.status == "pass" })
-    let compile = ($passing | each {|r|
-      let d = (num $r.cold_ms) - (num $r.warm_ms)
-      if $d < 0 { 0.0 } else { $d }
-    })
-    let warms = ($passing | each {|r| num $r.warm_ms })
-    let bigs = ($passing | each {|r| num ($r | get -o big_ms) } | where {|x| $x != null })
-    let first_rep = ($reps | first)
     {
       backend: $k.backend
-      case: $k.case
+      n: $k.n
       status: $status
-      compile_ms: (med $compile)
-      warm_ms: (med $warms)
-      big_ms: (med $bigs)
-      ir_functions: (num ($first_rep | get -o ir_functions))
-      ir_lines: (num ($first_rep | get -o ir_lines))
-      rejit: ($reps | each {|r| (num ($r | get -o rejit)) | default 0 } | math max)
+      cold_ms: (med ($passing | each {|r| num $r.cold_ms }))
+      ir_lines: (med ($passing | each {|r| num $r.ir_lines }))
+      ir_functions: (med ($passing | each {|r| num $r.ir_functions }))
     }
   }
 }
 
-def find-row [t: table, b: string, c: string] {
-  let m = ($t | where {|r| $r.backend == $b and $r.case == $c })
-  if ($m | is-empty) { null } else { $m | first }
-}
-
-def status-of [row: any] {
-  if $row == null { "n/a" } else { $row.status }
-}
-
-def pass-val [row: any, col: string] {
-  if $row == null or $row.status != "pass" { return null }
-  $row | get -o $col
+# For each backend: median cold_ms(30) / median cold_ms(10) and ir_lines(30) / ir_lines(10).
+export def chain-ratios [rows: table] {
+  let agg = (aggregate-reps $rows)
+  $agg | get backend | uniq | each {|b|
+    let ten = ($agg | where {|r| $r.backend == $b and $r.n == 10 })
+    let thirty = ($agg | where {|r| $r.backend == $b and $r.n == 30 })
+    let usable = ($ten | is-not-empty) and ($thirty | is-not-empty) and ($ten | first | get status) == "pass" and ($thirty | first | get status) == "pass"
+    {
+      backend: $b
+      cold_ratio: (if $usable { (($thirty | first | get cold_ms) / ($ten | first | get cold_ms)) } else { null })
+      ir_ratio: (if $usable { (($thirty | first | get ir_lines) / ($ten | first | get ir_lines)) } else { null })
+    }
+  }
 }
 
 def fixed [v: any, d: int] {
   if $v == null { "n/a" } else { $v | into float | into string --decimals $d }
 }
 
-def whole [v: any] {
-  if $v == null { "n/a" } else { $v | into float | math round | into int | into string }
-}
-
-def ratio [before: any, after: any] {
-  if $before == null or $after == null or $before == 0 { "n/a" } else { fixed ($after / $before) 2 }
-}
-
-def count-cell [row: any, col: string] {
-  if $row == null { return "n/a" }
-  let v = ($row | get -o $col)
-  if $v == null or $v == 0 { "n/a" } else { $v | into float | math round | into int | into string }
-}
-
-def ir-ratio [t: table, b: string] {
-  let c = (find-row $t $b "chain_30")
-  let ten = (find-row $t $b "ten_layers")
-  if $c == null or $ten == null { return "n/a" }
-  let cl = ($c | get -o ir_lines)
-  let tl = ($ten | get -o ir_lines)
-  if $cl == null or $tl == null or $cl == 0 or $tl == 0 { "n/a" } else { fixed ($cl / $tl) 2 }
-}
-
-export def build-report [before: table, after: table] {
-  let case_order = [plain_item ten_layers layers_8_16_32 chain_30 a_to_f]
-  let backends = ([omp cuda ocl ze] | where {|b|
-    ($before | any {|r| $r.backend == $b }) or ($after | any {|r| $r.backend == $b })
-  })
-  mut out = ["# sg layer calls: before/after" ""]
-  for b in $backends {
-    $out = ($out | append [$"## ($b)" ""])
-    $out = ($out | append "| case | status before | status after | compile ms before | compile ms after | compile ratio | kernel ms before | kernel ms after | kernel ratio | big kernel ms before | big kernel ms after | big kernel ratio | ir lines before | ir lines after | ir functions before | ir functions after |")
-    $out = ($out | append ("|" + (1..16 | each {|_| " --- |" } | str join "")))
-    for c in $case_order {
-      let rb = (find-row $before $b $c)
-      let ra = (find-row $after $b $c)
-      if $rb == null and $ra == null { continue }
-      let cb = (pass-val $rb compile_ms)
-      let ca = (pass-val $ra compile_ms)
-      let kb = (pass-val $rb warm_ms)
-      let ka = (pass-val $ra warm_ms)
-      let bb = (pass-val $rb big_ms)
-      let ba = (pass-val $ra big_ms)
-      let cells = [
-        $c (status-of $rb) (status-of $ra)
-        (whole $cb) (whole $ca) (ratio $cb $ca)
-        (fixed $kb 3) (fixed $ka 3) (ratio $kb $ka)
-        (fixed $bb 3) (fixed $ba 3) (ratio $bb $ba)
-        (count-cell $rb ir_lines) (count-cell $ra ir_lines)
-        (count-cell $rb ir_functions) (count-cell $ra ir_functions)
-      ]
-      $out = ($out | append ("| " + ($cells | str join " | ") + " |"))
+export def build-report [rows: table] {
+  let agg = (aggregate-reps $rows)
+  mut out = ["# sg chain measurement" ""]
+  for b in ($agg | get backend | uniq) {
+    $out = ($out | append [$"## ($b)" "" "| n | status | cold ms | ir lines | ir functions |" "| --- | --- | --- | --- | --- |"])
+    for r in ($agg | where {|r| $r.backend == $b } | sort-by n) {
+      $out = ($out | append $"| ($r.n) | ($r.status) | (fixed $r.cold_ms 1) | (fixed $r.ir_lines 0) | (fixed $r.ir_functions 0) |")
     }
     $out = ($out | append "")
   }
-  $out = ($out | append ["## verdicts"])
-  let ze_8 = (find-row $before ze layers_8_16_32)
-  let ze_8a = (find-row $after ze layers_8_16_32)
-  if $ze_8 != null or $ze_8a != null {
-    $out = ($out | append $"layers_8_16_32 on ze: (status-of $ze_8) -> (status-of $ze_8a)")
+  $out = ($out | append ["## ratios 30 over 10" "" "| backend | cold ratio | ir lines ratio |" "| --- | --- | --- |"])
+  for r in (chain-ratios $rows) {
+    $out = ($out | append $"| ($r.backend) | (fixed $r.cold_ratio 2) | (fixed $r.ir_ratio 2) |")
   }
-  for b in [cuda ocl ze] {
-    let x = (find-row $before $b chain_30)
-    let y = (find-row $after $b chain_30)
-    if $x != null or $y != null {
-      $out = ($out | append $"chain_30 on ($b): (status-of $x) -> (status-of $y)")
-    }
-  }
-  for b in [cuda ocl ze] {
-    let present = ([chain_30 ten_layers] | any {|c| (find-row $before $b $c) != null or (find-row $after $b $c) != null })
-    if $present {
-      $out = ($out | append $"ir growth chain_30/ten_layers on ($b): before (ir-ratio $before $b) after (ir-ratio $after $b)")
-    }
-  }
-  let flagged = (($before | append $after) | where {|r| (num ($r | get -o rejit) | default 0) > 0 } | length)
-  $out = ($out | append $"rejit flagged rows: ($flagged)")
   $out | str join "\n"
 }

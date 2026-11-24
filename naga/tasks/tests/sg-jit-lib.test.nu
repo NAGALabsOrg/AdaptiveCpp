@@ -1,15 +1,21 @@
 use std/assert
 use ../sg-jit-lib.nu *
 
-const ok_line = "sg_jit_bench case=chain_30 ok=1 cold_ms=11043.2 warm_ms=0.412 big_ms=3.870 rejit=0"
-const bad_line = "sg_jit_bench case=chain_30 ok=0 cold_ms=11043.2 warm_ms=0.412 big_ms=3.870 rejit=0"
+const ok_line = "sg_chain_bench n=30 ok=1 cold_ms=11043.2"
+const bad_line = "sg_chain_bench n=30 ok=0 cold_ms=11043.2"
 const begin = ";---------------- Begin AdaptiveCpp IR dump --------------"
 const end = ";----------------- End AdaptiveCpp IR dump ---------------"
 
+def row [backend: string, n: int, rep: int, status: string, cold: any, lines: int] {
+  {
+    label: x, backend: $backend, n: $n, rep: $rep, status: $status
+    cold_ms: $cold, ir_functions: 2, ir_lines: $lines, log: ""
+  }
+}
+
 def test-classify-exit-codes [] {
-  assert equal (classify-run 124 "") "infeasible"
   assert equal (classify-run 139 "") "crash"
-  assert equal (classify-run 134 "") "crash"
+  assert equal (classify-run 124 "") "timeout"
   assert equal (classify-run 0 $ok_line) "pass"
   assert equal (classify-run 1 $bad_line) "fail"
   assert equal (classify-run 0 $bad_line) "fail"
@@ -19,14 +25,9 @@ def test-classify-exit-codes [] {
 
 def test-parse-line [] {
   let r = (parse-bench-line $ok_line)
-  assert equal $r.case "chain_30"
+  assert equal $r.n 30
   assert equal $r.ok 1
   assert equal $r.cold_ms 11043.2
-  assert equal $r.warm_ms 0.412
-  assert equal $r.big_ms 3.87
-  assert equal $r.rejit 0
-  let na = (parse-bench-line "sg_jit_bench case=a_to_f ok=1 cold_ms=5.0 warm_ms=1.000 big_ms=NA rejit=1")
-  assert equal $na.big_ms null
   assert error {|| parse-bench-line "garbage" }
 }
 
@@ -49,71 +50,85 @@ def test-ir-metrics-picks-largest-section [] {
   assert equal (ir-metrics "") {functions: 0, lines: 0}
 }
 
-def test-layer-call-sites-counts [] {
-  let dump = ([
-    "  call void @__sg_drv_owner.l3(ptr %0) #7"
-    "  call void @__sg_drv_compute.l3(ptr %0) #7"
-    "  call void @__sg_drv_resolve_layer.l2(ptr %0) #8"
-    "  call void @__sg_drv_prep.n0(ptr %0) #7"
-    "attributes #7 = { noinline }"
-    "attributes #8 = { convergent }"
-  ] | str join "\n")
-  assert equal (layer-call-sites $dump) {total: 3, noinline: 2}
+def test-cold-ratio-is-the-ratio-of-medians [] {
+  let rows = [
+    (row ze 10 1 pass 1000.0 2000)
+    (row ze 10 2 pass 1100.0 2000)
+    (row ze 10 3 pass 900.0 2000)
+    (row ze 30 1 pass 3200.0 5000)
+    (row ze 30 2 pass 3000.0 5000)
+    (row ze 30 3 pass 3100.0 5000)
+  ]
+  let r = (chain-ratios $rows | first)
+  assert equal $r.backend "ze"
+  assert ((($r.cold_ratio) - 3.1 | math abs) < 0.000001)
 }
 
-def row [backend: string, case: string, rep: int, status: string, cold: any, warm: any, big: any, lines: int] {
-  {
-    label: x, backend: $backend, case: $case, rep: $rep, status: $status
-    cold_ms: $cold, warm_ms: $warm, big_ms: $big, rejit: 0
-    ir_functions: 2, ir_lines: $lines, log: ""
-  }
+def test-ir-ratio-is-the-ratio-of-line-counts [] {
+  let rows = [
+    (row omp 10 1 pass 1000.0 2000)
+    (row omp 30 1 pass 3000.0 5000)
+  ]
+  let r = (chain-ratios $rows | first)
+  assert equal $r.ir_ratio 2.5
 }
 
-def test-aggregate-median-and-status [] {
+def test-a-failed-length-gives-no-ratio [] {
+  let rows = [
+    (row ocl 10 1 pass 1000.0 2000)
+    (row ocl 30 1 crash null 0)
+  ]
+  let r = (chain-ratios $rows | first)
+  assert equal $r.cold_ratio null
+  assert equal $r.ir_ratio null
+}
+
+def test-aggregate-status-is-the-first-that-is-not-pass [] {
   let a = (aggregate-reps [
-    (row cuda ten_layers 1 pass 1000.0 10.0 null 100)
-    (row cuda ten_layers 2 pass 1200.0 20.0 null 100)
-    (row cuda ten_layers 3 pass 1100.0 10.0 null 100)
+    (row cuda 10 1 pass 1000.0 100)
+    (row cuda 10 2 timeout null 100)
   ])
-  assert equal ($a | length) 1
-  assert equal ($a | first | get status) "pass"
-  assert equal ($a | first | get compile_ms) 1090.0
-  assert equal ($a | first | get warm_ms) 10.0
-  let b = (aggregate-reps [
-    (row cuda ten_layers 1 pass 1000.0 10.0 null 100)
-    (row cuda ten_layers 2 crash null null null 100)
-  ])
-  assert equal ($b | first | get status) "crash"
+  assert equal ($a | first | get status) "timeout"
 }
 
 def test-report-shape [] {
-  let before = (aggregate-reps [
-    (row ze chain_30 1 infeasible null null null 900)
-    (row ze ten_layers 1 pass 2000.0 10.0 5.0 100)
+  let text = (build-report [
+    (row ze 10 1 pass 1000.0 2000)
+    (row ze 30 1 pass 3000.0 5000)
   ])
-  let after = (aggregate-reps [
-    (row ze chain_30 1 pass 3000.0 20.0 8.0 300)
-    (row ze ten_layers 1 pass 1000.0 10.0 5.0 100)
-  ])
-  let text = (build-report $before $after)
   let lines = ($text | lines)
-  assert equal ($lines | first) "# sg layer calls: before/after"
+  assert equal ($lines | first) "# sg chain measurement"
   assert ("## ze" in $lines)
-  assert ("## verdicts" in $lines)
-  assert ($lines | any {|l| $l starts-with "| case | status before | status after |" })
-  assert ($lines | any {|l| $l == "chain_30 on ze: infeasible -> pass" })
-  assert ($lines | any {|l| $l == "ir growth chain_30/ten_layers on ze: before 9.00 after 3.00" })
-  let ten = ($lines | where {|l| $l starts-with "| ten_layers |" } | first)
-  assert ($ten | str contains "| 0.50 |")
-  let chain = ($lines | where {|l| $l starts-with "| chain_30 |" } | first)
-  assert ($chain | str contains "| infeasible | pass | n/a | 2980 | n/a |")
-  assert ($lines | any {|l| $l == "rejit flagged rows: 0" })
+  assert ("## ratios 30 over 10" in $lines)
+  assert ($lines | any {|l| $l == "| ze | 3.00 | 2.50 |" })
 }
 
+def test-cache-env-is-a-record-for-every-backend [] {
+  for b in [omp cuda ocl ze] {
+    assert equal (cache-env $b | describe | str starts-with "record") true
+  }
+  assert equal (cache-env omp) ({x: 0} | reject x)
+  assert equal (cache-env cuda) {CUDA_CACHE_DISABLE: "1"}
+  assert equal (cache-env ocl) {NEO_CACHE_PERSISTENT: "0"}
+  assert equal (cache-env ze) {NEO_CACHE_PERSISTENT: "0"}
+  assert equal ({A: "1"} | merge (cache-env omp)) {A: "1"}
+}
+
+def test-mask-of-each-backend [] {
+  assert equal (mask-of omp) "omp"
+  assert equal (mask-of cuda) "omp;cuda"
+  assert equal (mask-of ocl) "ocl"
+  assert equal (mask-of ze) "ze"
+}
+
+test-cache-env-is-a-record-for-every-backend
+test-mask-of-each-backend
 test-classify-exit-codes
 test-parse-line
 test-ir-metrics-picks-largest-section
-test-layer-call-sites-counts
-test-aggregate-median-and-status
+test-cold-ratio-is-the-ratio-of-medians
+test-ir-ratio-is-the-ratio-of-line-counts
+test-a-failed-length-gives-no-ratio
+test-aggregate-status-is-the-first-that-is-not-pass
 test-report-shape
 print "sg-jit-lib tests: all passed"

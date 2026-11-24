@@ -1,39 +1,22 @@
-# Measure sg_jit_bench over backends and cases with every persistent cache cold.
+# Measure sg_chain_bench over backends and chain lengths with every persistent cache cold.
 #
-#   nu naga/tasks/sg-jit-measure.nu <label> [--backends cuda,ocl,ze]
-#       [--cases plain_item,ten_layers,layers_8_16_32,chain_30,a_to_f] [--reps 3] [--timeout 1200]
+#   nu naga/tasks/sg-jit-measure.nu <label> [--backends omp,cuda,ocl,ze] [--lengths 10,20,30]
+#       [--reps 3] [--timeout 1800]
 #
-# Each run gets a fresh, empty ACPP_APPDB_DIR and the drivers' on-disk caches switched
-# off; the user's ~/.acpp and the drivers' cache directories are never read or written.
-# Results go to ~/logs/acpp-fork/sg-jit-<label>-<timestamp>/results.csv.
+# Each run gets a fresh, empty ACPP_APPDB_DIR, the drivers' on-disk caches switched off and
+# ACPP_S2_DUMP_IR_FINAL set; the user's ~/.acpp and the drivers' cache directories are never
+# read or written. Results go to ~/logs/acpp-fork/sg-jit-<label>-<timestamp>/results.csv and
+# the ratios median cold_ms(30)/cold_ms(10) and ir_lines(30)/ir_lines(10) are printed per backend.
 
-use sg-jit-lib.nu [classify-run, parse-bench-line, ir-metrics, aggregate-reps]
+use sg-jit-lib.nu [classify-run, parse-bench-line, ir-metrics, aggregate-reps, chain-ratios, mask-of, cache-env]
 
 const all_backends = [omp cuda ocl ze]
-const all_cases = [plain_item ten_layers layers_8_16_32 chain_30 a_to_f]
 
-def mask-of [backend: string] {
-  match $backend {
-    "omp" => "omp"
-    "cuda" => "omp;cuda"
-    "ocl" => "ocl"
-    "ze" => "ze"
-  }
-}
-
-def cache-env [backend: string] {
-  match $backend {
-    "cuda" => {CUDA_CACHE_DISABLE: "1"}
-    "ocl" | "ze" => {NEO_CACHE_PERSISTENT: "0"}
-    _ => {}
-  }
-}
-
-def run-bench [log: path, env_vars: record, seconds: int, case: string] {
+def run-bench [log: path, env_vars: record, seconds: int, n: int] {
   try {
     let r = (do --ignore-errors {
       with-env $env_vars {
-        ^timeout $"($seconds)s" sg_jit_bench --case $case o+e>| tee { save --force $log }
+        ^timeout $"($seconds)s" sg_chain_bench --n $n o+e>| tee { save --force $log }
       }
     } | complete)
     if $r.exit_code < 0 { 128 - $r.exit_code } else { $r.exit_code }
@@ -44,19 +27,19 @@ def run-bench [log: path, env_vars: record, seconds: int, case: string] {
 
 def main [
   label: string
-  --backends: string = "cuda,ocl,ze"
-  --cases: string = "plain_item,ten_layers,layers_8_16_32,chain_30,a_to_f"
+  --backends: string = "omp,cuda,ocl,ze"
+  --lengths: string = "10,20,30"
   --reps: int = 3
-  --timeout: int = 1200
+  --timeout: int = 1800
 ] {
   let backends = ($backends | split row ',')
-  let cases = ($cases | split row ',')
-  if ($backends | any {|b| $b not-in $all_backends }) or ($cases | any {|c| $c not-in $all_cases }) {
-    print -e "sg-jit-measure: unknown backend or case"
+  let lengths = ($lengths | split row ',' | each {|l| $l | into int })
+  if ($backends | any {|b| $b not-in $all_backends }) {
+    print -e "sg-jit-measure: unknown backend"
     exit 1
   }
-  if (which sg_jit_bench | is-empty) {
-    print -e "sg-jit-measure: sg_jit_bench not found"
+  if (which sg_chain_bench | is-empty) {
+    print -e "sg-jit-measure: sg_chain_bench not found"
     exit 1
   }
 
@@ -67,9 +50,9 @@ def main [
 
   mut rows = []
   for backend in $backends {
-    for case in $cases {
+    for n in $lengths {
       for rep in 1..$reps {
-        let stem = $"($backend)-($case)-($rep)"
+        let stem = $"($backend)-($n)-($rep)"
         let log = ($dir | path join $"($stem).log")
         let dump = ($dir | path join $"($stem).final.ll")
         let appdb = ($dir | path join $"appdb-($stem)")
@@ -80,9 +63,9 @@ def main [
           ACPP_S2_DUMP_IR_FINAL: $dump
         } | merge (cache-env $backend))
         print $"sg-jit-measure: ($stem) start (date now | format date '%H:%M:%S')"
-        let code = (run-bench $log $env_vars $timeout $case)
+        let code = (run-bench $log $env_vars $timeout $n)
         let text = (if ($log | path exists) { open --raw $log | ansi strip } else { "" })
-        let line = ($text | lines | where {|l| $l starts-with "sg_jit_bench case=" } | last 1 | get -o 0 | default "")
+        let line = ($text | lines | where {|l| $l starts-with "sg_chain_bench n=" } | last 1 | get -o 0 | default "")
         let status = (classify-run $code $line)
         let parsed = (if $line != "" { try { parse-bench-line $line } catch { null } } else { null })
         let ir = (if ($dump | path exists) { ir-metrics (open --raw $dump) } else { {functions: 0, lines: 0} })
@@ -91,13 +74,10 @@ def main [
         $rows = ($rows | append {
           label: $label
           backend: $backend
-          case: $case
+          n: $n
           rep: $rep
           status: $status
           cold_ms: (if $parsed == null { null } else { $parsed.cold_ms })
-          warm_ms: (if $parsed == null { null } else { $parsed.warm_ms })
-          big_ms: (if $parsed == null { null } else { $parsed.big_ms })
-          rejit: (if $parsed == null { null } else { $parsed.rejit })
           ir_functions: $ir.functions
           ir_lines: $ir.lines
           log: $log
@@ -110,4 +90,5 @@ def main [
 
   print ""
   print (aggregate-reps $rows | table --expand)
+  print (chain-ratios $rows | table --expand)
 }
