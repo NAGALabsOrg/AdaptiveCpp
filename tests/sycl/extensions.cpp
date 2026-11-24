@@ -19,6 +19,7 @@
 #include "hipSYCL/sycl/libkernel/accessor.hpp"
 #include "hipSYCL/sycl/libkernel/cuda/cuda_backend.hpp"
 #include "hipSYCL/sycl/libkernel/hip/hip_backend.hpp"
+#include "hipSYCL/runtime/dag_node.hpp"
 #include "hipSYCL/sycl/property.hpp"
 #include "hipSYCL/sycl/handler.hpp"
 #include "hipSYCL/sycl/queue.hpp"
@@ -30,9 +31,13 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <functional>
 #include <future>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -890,6 +895,748 @@ BOOST_AUTO_TEST_CASE(async_host_retarget_no_abort) {
   });
 }
 #endif
+
+namespace async_host_checks {
+
+using namespace std::chrono_literals;
+
+// A flag a test holds closed and opens itself.
+struct gate {
+  std::atomic<bool> is_open{false};
+
+  void wait() const {
+    while(!is_open.load())
+      std::this_thread::sleep_for(1ms);
+  }
+
+  void open() { is_open = true; }
+};
+
+// Opens the gate when the test scope ends, so that no body stays blocked if a
+// check fails. Declare it after the queue and the futures of the test.
+struct gate_opener {
+  std::shared_ptr<gate> g;
+  ~gate_opener() { g->open(); }
+};
+
+inline bool becomes_true(const std::function<bool()> &condition,
+                         std::chrono::seconds limit) {
+  const auto deadline = std::chrono::steady_clock::now() + limit;
+  while(std::chrono::steady_clock::now() < deadline) {
+    if(condition())
+      return true;
+    std::this_thread::sleep_for(1ms);
+  }
+  return condition();
+}
+
+inline std::size_t many_operations() {
+  return std::max<std::size_t>(64, 4 * std::thread::hardware_concurrency());
+}
+
+// Waits for the event on another thread, so that the test can time the wait.
+inline std::future<void> wait_in_background(sycl::event e) {
+  return std::async(std::launch::async, [e]() mutable { e.wait(); });
+}
+
+// Boost cannot print a std::future_status, so a check is given a plain truth value.
+template <class Future>
+bool is_ready_within(Future &f, std::chrono::seconds limit) {
+  return f.wait_for(limit) == std::future_status::ready;
+}
+
+template <class Future>
+bool is_still_pending_after(Future &f, std::chrono::seconds limit) {
+  return f.wait_for(limit) == std::future_status::timeout;
+}
+
+inline bool is_complete(const sycl::event &e) {
+  sycl::event copy = e;
+  return copy.get_info<sycl::info::event::command_execution_status>() ==
+         sycl::info::event_command_status::complete;
+}
+
+// Counts what a queue's async handler receives.
+struct error_counter {
+  std::atomic<int> lists{0};
+  std::atomic<int> exceptions{0};
+
+  sycl::async_handler handler() {
+    return [this](sycl::exception_list errors) {
+      ++lists;
+      exceptions += static_cast<int>(errors.size());
+    };
+  }
+};
+
+// Counts the objects a body captured.
+struct object_counts {
+  std::atomic<int> constructed{0};
+  std::atomic<int> destroyed{0};
+};
+
+struct counted_object {
+  std::shared_ptr<object_counts> counts;
+
+  explicit counted_object(std::shared_ptr<object_counts> c) : counts{c} {
+    ++counts->constructed;
+  }
+  counted_object(const counted_object &) = delete;
+  ~counted_object() { ++counts->destroyed; }
+};
+
+// True once every node has been released by the runtime. Each poll submits an
+// operation of its own, which makes the runtime collect completed nodes.
+inline bool nodes_are_released(sycl::queue &q,
+                               const std::vector<std::weak_ptr<hipsycl::rt::dag_node>> &nodes) {
+  return becomes_true(
+      [&]() {
+        q.async_host([]() {}).wait();
+        for(const auto &node : nodes) {
+          if(!node.expired())
+            return false;
+        }
+        return true;
+      },
+      10s);
+}
+
+inline std::weak_ptr<hipsycl::rt::dag_node> node_of(const sycl::event &e) {
+  return std::weak_ptr<hipsycl::rt::dag_node>{sycl::detail::extract_rt_event(e)};
+}
+
+// C7: device work that depends on an unfinished host operation does not start
+// before the operation's body returned.
+inline void check_device_work_waits_behind_host_operation(sycl::queue q,
+                                                          bool in_order) {
+  if(!q.get_device().has(sycl::aspect::usm_shared_allocations)) {
+    BOOST_TEST_MESSAGE("no shared allocations, skipped");
+    return;
+  }
+
+  int *stage = sycl::malloc_shared<int>(1, q);
+  int *marker = sycl::malloc_shared<int>(1, q);
+  int *source = sycl::malloc_shared<int>(1, q);
+  int *copied = sycl::malloc_shared<int>(1, q);
+  *stage = 0;
+  *marker = 0;
+  *source = 7;
+  *copied = 0;
+
+  {
+    auto closed = std::make_shared<gate>();
+    gate_opener opener{closed};
+
+    sycl::event host = q.async_host([closed, stage]() {
+      closed->wait();
+      *stage = 1;
+    });
+
+    sycl::event kernel;
+    sycl::event copy;
+    if(in_order) {
+      kernel = q.single_task<class async_host_device_kernel_in_order>(
+          [=]() { *marker = (*stage == 1) ? 2 : 1; });
+      copy = q.memcpy(copied, source, sizeof(int));
+    } else {
+      kernel = q.submit([&](sycl::handler &cgh) {
+        cgh.depends_on(host);
+        cgh.single_task<class async_host_device_kernel_out_of_order>(
+            [=]() { *marker = (*stage == 1) ? 2 : 1; });
+      });
+      copy = q.memcpy(copied, source, sizeof(int), host);
+    }
+
+    std::this_thread::sleep_for(300ms);
+    BOOST_TEST(*marker == 0);
+    BOOST_TEST(*copied == 0);
+
+    closed->open();
+    kernel.wait();
+    copy.wait();
+    host.wait();
+  }
+
+  q.wait_and_throw();
+  BOOST_TEST(*marker == 2);
+  BOOST_TEST(*copied == 7);
+
+  sycl::free(stage, q);
+  sycl::free(marker, q);
+  sycl::free(source, q);
+  sycl::free(copied, q);
+}
+
+} // namespace async_host_checks
+
+// C1: an operation that does not depend on blocked ones is not delayed by them.
+BOOST_AUTO_TEST_CASE(async_host_unrelated_operation_is_not_delayed_by_blocked_ones) {
+  using namespace async_host_checks;
+
+  sycl::queue q;
+  sycl::queue other_queue;
+  const std::size_t blocked = many_operations();
+
+  // C1.a: blocked operations on one queue, an unrelated one on another queue
+  {
+    auto closed = std::make_shared<gate>();
+    gate_opener opener{closed};
+    auto unrelated_ran = std::make_shared<std::atomic<bool>>(false);
+
+    for(std::size_t i = 0; i < blocked; ++i)
+      q.async_host([closed]() { closed->wait(); });
+
+    sycl::event unrelated =
+        other_queue.async_host([unrelated_ran]() { *unrelated_ran = true; });
+    BOOST_TEST(becomes_true([&]() { return unrelated_ran->load(); }, 10s));
+    unrelated.wait();
+
+    // C1.c: the unrelated operation on the queue of the blocked ones
+    auto same_queue_ran = std::make_shared<std::atomic<bool>>(false);
+    q.async_host([same_queue_ran]() { *same_queue_ran = true; });
+    BOOST_TEST(becomes_true([&]() { return same_queue_ran->load(); }, 10s));
+  }
+  q.wait_and_throw();
+
+  // C1.b: blocked operations that wait for the event of a gated operation
+  {
+    auto closed = std::make_shared<gate>();
+    gate_opener opener{closed};
+    auto unrelated_ran = std::make_shared<std::atomic<bool>>(false);
+
+    sycl::event gated = q.async_host([closed]() { closed->wait(); });
+    for(std::size_t i = 0; i < blocked; ++i)
+      q.async_host([]() {}, gated);
+
+    other_queue.async_host([unrelated_ran]() { *unrelated_ran = true; });
+    BOOST_TEST(becomes_true([&]() { return unrelated_ran->load(); }, 10s));
+  }
+  q.wait_and_throw();
+  other_queue.wait_and_throw();
+}
+
+// C2: the number of operations running at once is not capped by hardware threads.
+BOOST_AUTO_TEST_CASE(async_host_runs_more_operations_at_once_than_hardware_threads) {
+  using namespace async_host_checks;
+
+  sycl::queue q;
+  const std::size_t count = many_operations();
+
+  // C2.a: every body waits until all bodies are inside
+  {
+    std::future<void> all_done;
+    auto release = std::make_shared<gate>();
+    gate_opener opener{release};
+    auto arrived = std::make_shared<std::atomic<std::size_t>>(0);
+
+    std::vector<sycl::event> events;
+    for(std::size_t i = 0; i < count; ++i) {
+      events.push_back(q.async_host([arrived, release, count]() {
+        ++*arrived;
+        while(arrived->load() < count && !release->is_open.load())
+          std::this_thread::sleep_for(1ms);
+      }));
+    }
+
+    all_done = std::async(std::launch::async, [events]() { sycl::event::wait(events); });
+    BOOST_TEST(is_ready_within(all_done, 30s));
+    BOOST_TEST(arrived->load() == count);
+  }
+  q.wait_and_throw();
+
+  // C2.b: with the first N blocked, a further N still reach their bodies
+  {
+    auto closed = std::make_shared<gate>();
+    gate_opener opener{closed};
+    auto started = std::make_shared<std::atomic<std::size_t>>(0);
+
+    for(std::size_t i = 0; i < count; ++i)
+      q.async_host([closed]() { closed->wait(); });
+    for(std::size_t i = 0; i < count; ++i)
+      q.async_host([started]() { ++*started; });
+
+    BOOST_TEST(becomes_true([&]() { return started->load() == count; }, 10s));
+  }
+  q.wait_and_throw();
+}
+
+// C3: an event is not complete while its body runs.
+BOOST_AUTO_TEST_CASE(async_host_event_is_incomplete_while_the_body_runs) {
+  using namespace async_host_checks;
+
+  sycl::queue q;
+
+  // C3.a
+  {
+    auto closed = std::make_shared<gate>();
+    gate_opener opener{closed};
+
+    sycl::event e = q.async_host([closed]() { closed->wait(); });
+    sycl::event copy = e;
+    BOOST_TEST(!is_complete(e));
+    BOOST_TEST(!is_complete(copy));
+
+    std::future<void> wait_for_event = wait_in_background(e);
+    std::future<void> wait_for_copy = wait_in_background(copy);
+    BOOST_TEST(is_still_pending_after(wait_for_event, 1s));
+    BOOST_TEST(is_still_pending_after(wait_for_copy, 1s));
+
+    closed->open();
+    BOOST_TEST(is_ready_within(wait_for_event, 10s));
+    BOOST_TEST(is_ready_within(wait_for_copy, 10s));
+  }
+
+  // C3.b: whenever the event is observed complete, the last statement has run
+  {
+    auto closed = std::make_shared<gate>();
+    auto last_statement_ran = std::make_shared<std::atomic<bool>>(false);
+
+    sycl::event e = q.async_host([closed, last_statement_ran]() {
+      closed->wait();
+      std::this_thread::sleep_for(20ms);
+      *last_statement_ran = true;
+    });
+
+    std::future<int> observations = std::async(std::launch::async, [e, last_statement_ran]() {
+      int violations = 0;
+      for(int poll = 0; poll < 10000; ++poll) {
+        if(is_complete(e) && !last_statement_ran->load())
+          ++violations;
+        std::this_thread::yield();
+      }
+      return violations;
+    });
+    std::this_thread::sleep_for(50ms);
+    closed->open();
+    BOOST_TEST(observations.get() == 0);
+    e.wait();
+  }
+  q.wait_and_throw();
+}
+
+// C4: an event is complete once its body has returned.
+BOOST_AUTO_TEST_CASE(async_host_event_is_complete_once_the_body_has_returned) {
+  using namespace async_host_checks;
+
+  sycl::queue q;
+  auto closed = std::make_shared<gate>();
+  gate_opener opener{closed};
+
+  sycl::event e = q.async_host([closed]() { closed->wait(); });
+  sycl::event copy = e;
+  std::weak_ptr<hipsycl::rt::dag_node> node = node_of(e);
+
+  // C4.c: two threads wait on copies of the event at once
+  std::future<void> first_waiter = wait_in_background(e);
+  std::future<void> second_waiter = wait_in_background(copy);
+
+  closed->open();
+
+  // C4.a
+  BOOST_TEST(is_ready_within(first_waiter, 10s));
+  BOOST_TEST(is_ready_within(second_waiter, 10s));
+  e.wait();
+  BOOST_TEST(is_complete(e));
+  BOOST_TEST(is_complete(copy));
+
+  // The waiters hold copies of the event until their futures are destroyed.
+  first_waiter.get();
+  second_waiter.get();
+  first_waiter = std::future<void>{};
+  second_waiter = std::future<void>{};
+
+  // C4.b: no submitted node is left for the operation
+  e = sycl::event{};
+  copy = sycl::event{};
+  q.wait_and_throw();
+  BOOST_TEST(nodes_are_released(q, {node}));
+}
+
+// C5: a body does not start before its requirements are complete.
+BOOST_AUTO_TEST_CASE(async_host_waits_for_its_requirements) {
+  using namespace async_host_checks;
+
+  sycl::queue q;
+
+  // C5.a
+  {
+    auto closed = std::make_shared<gate>();
+    gate_opener opener{closed};
+    auto clock = std::make_shared<std::atomic<int>>(0);
+    auto first_returned = std::make_shared<std::atomic<int>>(0);
+    auto second_started = std::make_shared<std::atomic<int>>(0);
+
+    sycl::event first = q.async_host([closed, clock, first_returned]() {
+      closed->wait();
+      *first_returned = ++*clock;
+    });
+    sycl::event second = q.async_host(
+        [clock, second_started]() { *second_started = ++*clock; }, first);
+
+    std::this_thread::sleep_for(300ms);
+    BOOST_TEST(second_started->load() == 0);
+
+    const int opened_at = ++*clock;
+    closed->open();
+    second.wait();
+    BOOST_TEST(first_returned->load() > opened_at);
+    BOOST_TEST(second_started->load() > first_returned->load());
+  }
+  q.wait_and_throw();
+
+  // C5.b: a gated host operation and a gated kernel
+  if(!q.get_device().has(sycl::aspect::usm_shared_allocations)) {
+    BOOST_TEST_MESSAGE("no shared allocations, C5.b skipped");
+    return;
+  }
+  int *kernel_ran = sycl::malloc_shared<int>(1, q);
+  *kernel_ran = 0;
+  {
+    auto closed_for_first = std::make_shared<gate>();
+    auto closed_for_kernel = std::make_shared<gate>();
+    gate_opener first_opener{closed_for_first};
+    gate_opener kernel_opener{closed_for_kernel};
+    auto kernel_seen_by_second = std::make_shared<std::atomic<int>>(-1);
+
+    sycl::event first = q.async_host([closed_for_first]() { closed_for_first->wait(); });
+    sycl::event before_kernel =
+        q.async_host([closed_for_kernel]() { closed_for_kernel->wait(); });
+    sycl::event kernel = q.submit([&](sycl::handler &cgh) {
+      cgh.depends_on(before_kernel);
+      cgh.single_task<class async_host_requirements_kernel>(
+          [=]() { *kernel_ran = 1; });
+    });
+    sycl::event second = q.async_host(
+        [kernel_ran, kernel_seen_by_second]() { *kernel_seen_by_second = *kernel_ran; },
+        std::vector<sycl::event>{first, kernel});
+
+    closed_for_first->open();
+    std::this_thread::sleep_for(300ms);
+    BOOST_TEST(kernel_seen_by_second->load() == -1);
+
+    closed_for_kernel->open();
+    second.wait();
+    BOOST_TEST(kernel_seen_by_second->load() == 1);
+  }
+  q.wait_and_throw();
+  sycl::free(kernel_ran, q);
+}
+
+// C6: in-order predecessors precede a host operation.
+BOOST_AUTO_TEST_CASE(async_host_follows_in_order_predecessors) {
+  using namespace async_host_checks;
+
+  sycl::queue q{sycl::property_list{sycl::property::queue::in_order{}}};
+
+  // C6.a: a gated kernel, then a host operation
+  if(q.get_device().has(sycl::aspect::usm_shared_allocations)) {
+    int *marker = sycl::malloc_shared<int>(1, q);
+    *marker = 0;
+    {
+      auto closed = std::make_shared<gate>();
+      gate_opener opener{closed};
+      auto seen_by_host_operation = std::make_shared<std::atomic<int>>(-1);
+
+      q.async_host([closed]() { closed->wait(); });
+      q.single_task<class async_host_in_order_kernel>([=]() { *marker = 1; });
+      sycl::event last = q.async_host(
+          [marker, seen_by_host_operation]() { *seen_by_host_operation = *marker; });
+
+      std::this_thread::sleep_for(300ms);
+      BOOST_TEST(seen_by_host_operation->load() == -1);
+
+      closed->open();
+      last.wait();
+      BOOST_TEST(seen_by_host_operation->load() == 1);
+    }
+    q.wait_and_throw();
+    sycl::free(marker, q);
+  } else {
+    BOOST_TEST_MESSAGE("no shared allocations, C6.a skipped");
+  }
+
+  // C6.b: 100 host operations run in submission order
+  {
+    auto lock = std::make_shared<std::mutex>();
+    auto order = std::make_shared<std::vector<int>>();
+    for(int i = 0; i < 100; ++i) {
+      q.async_host([lock, order, i]() {
+        std::lock_guard<std::mutex> guard{*lock};
+        order->push_back(i);
+      });
+    }
+    q.wait_and_throw();
+
+    BOOST_REQUIRE(order->size() == 100);
+    for(int i = 0; i < 100; ++i)
+      BOOST_TEST((*order)[i] == i);
+  }
+}
+
+// C7: device work waits behind an unfinished host operation.
+BOOST_AUTO_TEST_CASE(async_host_device_work_waits_behind_the_operation) {
+  using namespace async_host_checks;
+
+  sycl::queue out_of_order_queue;
+  check_device_work_waits_behind_host_operation(out_of_order_queue, false);
+
+  sycl::queue in_order_queue{sycl::property_list{sycl::property::queue::in_order{}}};
+  check_device_work_waits_behind_host_operation(in_order_queue, true);
+}
+
+// C11: a throwing body does not end the process and its event completes.
+BOOST_AUTO_TEST_CASE(async_host_exception_does_not_end_the_process) {
+  using namespace async_host_checks;
+
+  error_counter counter;
+  sycl::queue q{counter.handler()};
+
+  // C11.a
+  sycl::event runtime_error_event =
+      q.async_host([]() { throw std::runtime_error{"thrown by a host operation"}; });
+  std::future<void> first_wait = wait_in_background(runtime_error_event);
+  BOOST_TEST(is_ready_within(first_wait, 10s));
+  BOOST_TEST(is_complete(runtime_error_event));
+
+  // C11.b: a type that is not derived from std::exception
+  sycl::event plain_event = q.async_host([]() { throw 42; });
+  std::future<void> second_wait = wait_in_background(plain_event);
+  BOOST_TEST(is_ready_within(second_wait, 10s));
+  BOOST_TEST(is_complete(plain_event));
+
+  // C11.c: an operation that depends on a throwing one still runs
+  auto dependent_ran = std::make_shared<std::atomic<bool>>(false);
+  sycl::event dependent =
+      q.async_host([dependent_ran]() { *dependent_ran = true; }, runtime_error_event);
+  dependent.wait();
+  BOOST_TEST(dependent_ran->load());
+
+  q.wait_and_throw();
+}
+
+// C12: a body's exception arrives once as an asynchronous error.
+BOOST_AUTO_TEST_CASE(async_host_exception_is_delivered_as_asynchronous_error) {
+  using namespace async_host_checks;
+
+  // C12.a
+  {
+    error_counter counter;
+    sycl::queue q{counter.handler()};
+
+    sycl::event e = q.async_host([]() { throw std::runtime_error{"one error"}; });
+    e.wait();
+    q.wait_and_throw();
+    BOOST_TEST(counter.lists.load() == 1);
+    BOOST_TEST(counter.exceptions.load() == 1);
+
+    q.wait_and_throw();
+    BOOST_TEST(counter.lists.load() == 1);
+    BOOST_TEST(counter.exceptions.load() == 1);
+  }
+
+  // C12.b
+  {
+    error_counter counter;
+    sycl::queue q{counter.handler()};
+
+    for(int i = 0; i < 3; ++i)
+      q.async_host([]() { throw std::runtime_error{"one of three errors"}; });
+    q.wait_and_throw();
+    BOOST_TEST(counter.exceptions.load() == 3);
+  }
+}
+
+// C13: dropping the last handle to the event of a running operation.
+BOOST_AUTO_TEST_CASE(async_host_last_event_handle_dropped_from_another_thread) {
+  using namespace async_host_checks;
+
+  sycl::queue q;
+
+  // C13.a
+  {
+    auto closed = std::make_shared<gate>();
+    gate_opener opener{closed};
+    auto finished = std::make_shared<std::atomic<bool>>(false);
+
+    sycl::event e = q.async_host([closed, finished]() {
+      closed->wait();
+      *finished = true;
+    });
+    std::future<void> dropper =
+        std::async(std::launch::async, [handle = std::move(e)]() mutable {
+          handle = sycl::event{};
+        });
+    BOOST_TEST(is_ready_within(dropper, 1s));
+
+    closed->open();
+    BOOST_TEST(becomes_true([&]() { return finished->load(); }, 10s));
+  }
+  q.wait_and_throw();
+
+  // C13.b: eight threads drop their copies at once
+  {
+    auto closed = std::make_shared<gate>();
+    gate_opener opener{closed};
+    auto finished = std::make_shared<std::atomic<bool>>(false);
+
+    sycl::event e = q.async_host([closed, finished]() {
+      closed->wait();
+      *finished = true;
+    });
+
+    std::vector<std::vector<sycl::event>> copies(8);
+    for(auto &list : copies)
+      list.assign(20, e);
+    e = sycl::event{};
+
+    auto ready_to_drop = std::make_shared<std::atomic<int>>(0);
+    std::vector<std::future<void>> droppers;
+    for(auto &list : copies) {
+      droppers.push_back(std::async(std::launch::async, [&list, ready_to_drop]() {
+        ++*ready_to_drop;
+        while(ready_to_drop->load() < 8)
+          std::this_thread::yield();
+        list.clear();
+      }));
+    }
+    for(auto &dropper : droppers)
+      BOOST_TEST(is_ready_within(dropper, 10s));
+
+    closed->open();
+    BOOST_TEST(becomes_true([&]() { return finished->load(); }, 10s));
+  }
+  q.wait_and_throw();
+}
+
+// C14: a host operation drops the last reference to its own event.
+BOOST_AUTO_TEST_CASE(async_host_body_drops_the_last_handle_to_its_own_event) {
+  using namespace async_host_checks;
+
+  error_counter counter;
+  sycl::queue q{counter.handler()};
+
+  // C14.a: the body holds the only event handle
+  {
+    auto closed = std::make_shared<gate>();
+    gate_opener opener{closed};
+    auto finished = std::make_shared<std::atomic<bool>>(false);
+
+    auto slot = std::make_shared<sycl::event>();
+    *slot = q.async_host([slot, closed, finished]() mutable {
+      closed->wait();
+      *slot = sycl::event{};
+      slot.reset();
+      *finished = true;
+    });
+    slot.reset();
+
+    closed->open();
+    BOOST_TEST(becomes_true([&]() { return finished->load(); }, 10s));
+  }
+  std::future<void> first_wait = std::async(std::launch::async, [&]() { q.wait(); });
+  BOOST_TEST(is_ready_within(first_wait, 10s));
+
+  // C14.b: the body drops the last reference to an object that holds the queue and the event
+  struct holder {
+    sycl::queue q;
+    sycl::event e;
+  };
+  {
+    auto closed = std::make_shared<gate>();
+    gate_opener opener{closed};
+    auto finished = std::make_shared<std::atomic<bool>>(false);
+
+    auto owner = std::make_shared<holder>();
+    owner->q = q;
+    owner->e = q.async_host([owner, closed, finished]() mutable {
+      closed->wait();
+      owner.reset();
+      *finished = true;
+    });
+    owner.reset();
+
+    closed->open();
+    BOOST_TEST(becomes_true([&]() { return finished->load(); }, 10s));
+  }
+  std::future<void> second_wait = std::async(std::launch::async, [&]() { q.wait(); });
+  BOOST_TEST(is_ready_within(second_wait, 10s));
+
+  q.wait_and_throw();
+  BOOST_TEST(counter.exceptions.load() == 0);
+}
+
+// C15: 500 operations pending on one gate, all handles dropped at once.
+BOOST_AUTO_TEST_CASE(async_host_many_dropped_events) {
+  using namespace async_host_checks;
+
+  sycl::queue q;
+  auto closed = std::make_shared<gate>();
+  gate_opener opener{closed};
+  auto counter = std::make_shared<std::atomic<int>>(0);
+
+  for(int i = 0; i < 500; ++i)
+    q.async_host([closed, counter]() {
+      closed->wait();
+      ++*counter;
+    });
+
+  closed->open();
+  BOOST_TEST(becomes_true([&]() { return counter->load() == 500; }, 60s));
+  q.wait_and_throw();
+}
+
+// C16: nothing a host operation owns is leaked.
+BOOST_AUTO_TEST_CASE(async_host_owned_objects_are_destroyed_once) {
+  using namespace async_host_checks;
+
+  const int operations = 50;
+
+  // C16.a: completed operations
+  {
+    sycl::queue q;
+    auto counts = std::make_shared<object_counts>();
+    std::vector<std::weak_ptr<hipsycl::rt::dag_node>> nodes;
+
+    for(int i = 0; i < operations; ++i) {
+      auto object = std::make_shared<counted_object>(counts);
+      sycl::event e = q.async_host([object]() {});
+      nodes.push_back(node_of(e));
+    }
+    q.wait_and_throw();
+
+    BOOST_TEST(becomes_true([&]() { return counts->destroyed.load() == operations; }, 10s));
+    BOOST_TEST(counts->constructed.load() == operations);
+    BOOST_TEST(nodes_are_released(q, nodes));
+  }
+
+  // C16.b: throwing bodies, and events dropped before completion
+  {
+    error_counter errors;
+    sycl::queue q{errors.handler()};
+    auto counts = std::make_shared<object_counts>();
+    auto closed = std::make_shared<gate>();
+    gate_opener opener{closed};
+    std::vector<std::weak_ptr<hipsycl::rt::dag_node>> nodes;
+
+    for(int i = 0; i < operations; ++i) {
+      auto object = std::make_shared<counted_object>(counts);
+      sycl::event e = q.async_host([object]() { throw std::runtime_error{"thrown"}; });
+      nodes.push_back(node_of(e));
+    }
+    for(int i = 0; i < operations; ++i) {
+      auto object = std::make_shared<counted_object>(counts);
+      sycl::event e = q.async_host([object, closed]() { closed->wait(); });
+      nodes.push_back(node_of(e));
+    }
+    closed->open();
+    q.wait_and_throw();
+
+    BOOST_TEST(becomes_true([&]() { return counts->destroyed.load() == 2 * operations; }, 10s));
+    BOOST_TEST(counts->constructed.load() == 2 * operations);
+    BOOST_TEST(errors.exceptions.load() == operations);
+    BOOST_TEST(nodes_are_released(q, nodes));
+  }
+}
 #endif
 #ifdef ACPP_EXT_BUFFER_USM_INTEROP
 BOOST_AUTO_TEST_CASE(buffer_introspection) {

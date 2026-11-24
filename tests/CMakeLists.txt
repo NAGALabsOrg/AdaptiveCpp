@@ -131,11 +131,26 @@ add_sycl_to_target(TARGET sycl_tests)
 add_executable(rt_tests 
   runtime/runtime_test_suite.cpp 
   runtime/dag_builder.cpp
-  runtime/data.cpp)
+  runtime/data.cpp
+  runtime/async_host_event.cpp)
 
 target_include_directories(rt_tests PRIVATE ${Boost_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR} ${OpenMP_CXX_INCLUDE_DIRS})
 target_link_libraries(rt_tests PRIVATE Threads::Threads)
 add_sycl_to_target(TARGET rt_tests)
+
+# Programs that need a process of their own: they end the process with host
+# operations outstanding, lower the process's thread limit, or count threads.
+foreach(async_host_program
+    "async_host_shutdown_test:async_host/shutdown.cpp"
+    "async_host_unlaunchable_test:async_host/unlaunchable.cpp"
+    "async_host_threads_test:async_host/threads_after_operations.cpp")
+  string(REPLACE ":" ";" async_host_program_parts ${async_host_program})
+  list(GET async_host_program_parts 0 async_host_program_name)
+  list(GET async_host_program_parts 1 async_host_program_source)
+  add_executable(${async_host_program_name} ${async_host_program_source})
+  target_link_libraries(${async_host_program_name} PRIVATE Threads::Threads)
+  add_sycl_to_target(TARGET ${async_host_program_name})
+endforeach()
 
 # We cannot enable building them unconditionally at the moment,
 # because --acpp-stdpar is not compatible with all --acpp-targets

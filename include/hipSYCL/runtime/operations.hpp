@@ -547,6 +547,13 @@ public:
 
   void run() { _f(); }
 
+  /// Hands the host function to the caller, which becomes its only owner.
+  host_function take_function() {
+    host_function f;
+    f.swap(_f);
+    return f;
+  }
+
   /// An event marking the work an in-order queue had already submitted, which
   /// orders this operation against work it never shares a queue with.
   void set_preceding_event(std::shared_ptr<dag_node_event> evt) {

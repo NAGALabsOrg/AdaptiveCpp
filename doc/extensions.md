@@ -494,7 +494,9 @@ public:
 
 Adds `queue::async_host()` and `handler::async_host()`, which run a host callable as part of the dag. The callable is ordered against the other operations of the queue like any other operation, and the returned event completes when it returns.
 
-The callable runs on a thread owned by the runtime. It is therefore not affected by which backends are visible, and does not compete with a device for the resources it uses to run kernels. It is associated with the device the operation was submitted to, or retargeted to, only for the purpose of ordering.
+Each operation is launched with `std::async` using `std::launch::async`, on a thread of its own that exists for as long as the operation's future does; the runtime keeps no pool of threads and no queue of host operations, and an operation never waits behind another one it does not depend on. The callable is therefore not affected by which backends are visible, and does not compete with a device for the resources it uses to run kernels. It is associated with the device the operation was submitted to, or retargeted to, only for the purpose of ordering.
+
+The returned event is complete when the callable has returned and everything it captured has been destroyed. An exception that leaves the callable does not end the process: it is reported as an asynchronous error through the queue's async handler, and the event completes. If the system refuses to provide a thread, the callable does not run, one asynchronous error is reported, and the event is complete.
 
 Arguments are handled as in `std::async`: everything the callable refers to must remain valid until it has run, which for a task that is still queued may be long after the enclosing scope has exited.
 
