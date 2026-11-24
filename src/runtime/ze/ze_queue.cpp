@@ -10,7 +10,10 @@
 // SPDX-License-Identifier: BSD-2-Clause
 #include <cassert>
 #include <chrono>
+#include <algorithm>
+#include <cstdint>
 #include <future>
+#include <limits>
 #include <utility>
 #include <level_zero/ze_api.h>
 #include <vector>
@@ -286,11 +289,80 @@ result ze_queue::submit_memcpy(memcpy_operation& op, const dag_node_ptr& node) {
                      error_code{"ze", static_cast<int>(err)}});
     }
   } else {
-    return make_error(
-        __acpp_here(),
-        error_info{
-            "ze_queue: Multidimensional memory copies are not yet supported.",
-            error_type::unimplemented});
+    // Element x is the fastest dimension (index 2); regions, origins and
+    // pitches of the Level Zero region copy are in bytes, rows and slices.
+    const id<3> src_offset = op.source().get_access_offset();
+    const id<3> dest_offset = op.dest().get_access_offset();
+    const std::size_t src_element_size = op.source().get_element_size();
+    const std::size_t dest_element_size = op.dest().get_element_size();
+    const range<3> src_shape = op.source().get_allocation_shape();
+    const range<3> dest_shape = op.dest().get_allocation_shape();
+
+    const std::size_t width = transfer_range[2] * src_element_size;
+    const std::size_t src_pitch = src_shape[2] * src_element_size;
+    const std::size_t dest_pitch = dest_shape[2] * dest_element_size;
+    const std::size_t src_slice_pitch = src_shape[1] * src_pitch;
+    const std::size_t dest_slice_pitch = dest_shape[1] * dest_pitch;
+
+    char *src_base = reinterpret_cast<char *>(op.source().get_base_ptr());
+    char *dest_base = reinterpret_cast<char *>(op.dest().get_base_ptr());
+    std::size_t src_z = src_offset[0];
+    std::size_t dest_z = dest_offset[0];
+    std::size_t depth = 0;
+    if(dimension == 2) {
+      // A 2D region has depth 0: the slice is selected through the pointer.
+      src_base += src_z * src_slice_pitch;
+      dest_base += dest_z * dest_slice_pitch;
+      src_z = 0;
+      dest_z = 0;
+    } else {
+      depth = transfer_range[0];
+    }
+
+    const std::size_t limit = std::numeric_limits<uint32_t>::max();
+    const std::size_t largest = std::max(
+        {width, src_pitch, dest_pitch, src_slice_pitch, dest_slice_pitch,
+         src_offset[2] * src_element_size, dest_offset[2] * dest_element_size,
+         static_cast<std::size_t>(src_offset[1]),
+         static_cast<std::size_t>(dest_offset[1]), src_z, dest_z,
+         static_cast<std::size_t>(transfer_range[1]), depth});
+    if(largest > limit) {
+      return make_error(
+          __acpp_here(),
+          error_info{"ze_queue: Multidimensional memory copy exceeds the "
+                     "32-bit range of Level Zero copy regions.",
+                     error_type::unimplemented});
+    }
+
+    ze_copy_region_t src_region;
+    src_region.originX = static_cast<uint32_t>(src_offset[2] * src_element_size);
+    src_region.originY = static_cast<uint32_t>(src_offset[1]);
+    src_region.originZ = static_cast<uint32_t>(src_z);
+    src_region.width = static_cast<uint32_t>(width);
+    src_region.height = static_cast<uint32_t>(transfer_range[1]);
+    src_region.depth = static_cast<uint32_t>(depth);
+
+    ze_copy_region_t dest_region = src_region;
+    dest_region.originX =
+        static_cast<uint32_t>(dest_offset[2] * dest_element_size);
+    dest_region.originY = static_cast<uint32_t>(dest_offset[1]);
+    dest_region.originZ = static_cast<uint32_t>(dest_z);
+
+    ze_result_t err = zeCommandListAppendMemoryCopyRegion(
+        _command_list, dest_base, &dest_region,
+        static_cast<uint32_t>(dest_pitch),
+        static_cast<uint32_t>(dest_slice_pitch), src_base, &src_region,
+        static_cast<uint32_t>(src_pitch),
+        static_cast<uint32_t>(src_slice_pitch),
+        static_cast<ze_node_event *>(completion_evt.get())->get_event_handle(),
+        static_cast<uint32_t>(wait_events.size()), wait_events.data());
+
+    if(err != ZE_RESULT_SUCCESS) {
+      return make_error(
+          __acpp_here(),
+          error_info{"ze_queue: zeCommandListAppendMemoryCopyRegion() failed",
+                     error_code{"ze", static_cast<int>(err)}});
+    }
   }
 
   register_submitted_op(completion_evt);
@@ -428,6 +500,10 @@ result ze_queue::submit_external_wait_for(const dag_node_ptr& node) {
 
 result ze_queue::query_status(inorder_queue_status &status) {
   std::lock_guard<std::mutex> lock{_mutex};
+  if(!this->_last_submitted_op_event) {
+    status = inorder_queue_status{true};
+    return make_success();
+  }
   status = inorder_queue_status{this->_last_submitted_op_event->is_complete()};
   return make_success();
 }
