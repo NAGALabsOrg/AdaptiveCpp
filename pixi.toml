@@ -161,11 +161,11 @@ description = "sg: lit compile-fail and compile-pass suite"
 
 [feature.sg-tests.tasks.sg-jit-measure]
 cmd = "nu naga/tasks/sg-jit-measure.nu"
-description = "sg: cold before/after measurement of sg_jit_bench over backends and cases"
+description = "sg: cold measurement of sg_chain_bench over backends and chain lengths"
 
 [feature.sg-tests.tasks.sg-jit-report]
 cmd = "nu naga/tasks/sg-jit-report.nu"
-description = "sg: render the before/after comparison of two sg-jit-measure runs"
+description = "sg: render the table and the 30-over-10 ratios of one sg-jit-measure run"
 
 [feature.sg-tests.tasks.sg-jit-lib-test]
 cmd = "nu naga/tasks/tests/sg-jit-lib.test.nu"

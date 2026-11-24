@@ -1,7 +1,11 @@
 #pragma once
+#include "hipSYCL/sg/detail/bound_block.hpp"
 #include "hipSYCL/sg/detail/graph_impl.hpp"
+#include "hipSYCL/sg/graph.hpp"
 
+#include <cstdlib>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -9,9 +13,20 @@
 namespace sgt {
 using namespace sg::detail;
 
+struct aligned_arena {
+  std::size_t bytes;
+  char *base;
+  explicit aligned_arena(std::size_t n) : bytes(n), base(static_cast<char *>(std::aligned_alloc(256, n))) {
+    std::fill(base, base + n, 0);
+  }
+  ~aligned_arena() { std::free(base); }
+  aligned_arena(const aligned_arena &) = delete;
+};
+
+// A device whose queue only logs.
 struct mock_ops final : device_ops {
   std::vector<std::string> log;
-  struct copy_call { int dev; void *dst; const void *src; std::size_t bytes; std::vector<op_id> deps; };
+  struct copy_call { int dev; void *dst; const void *src; std::size_t bytes; std::vector<op_id> deps; op_id id; };
   struct fill_call { int dev; std::size_t count; std::vector<std::byte> pattern; std::vector<op_id> deps; };
   struct launch_call { int dev; kernel_launch_desc desc; std::vector<op_id> deps; };
   struct host_call { std::vector<op_id> deps; };
@@ -39,7 +54,7 @@ struct mock_ops final : device_ops {
   void deallocate(int, void *) override {}
   op_id copy(int dev, void *dst, const void *src, std::size_t bytes, const std::vector<op_id> &deps) override {
     log.push_back("copy");
-    copies.push_back({dev, dst, src, bytes, deps});
+    copies.push_back({dev, dst, src, bytes, deps, next + 1});
     return ++next;
   }
   op_id fill(int dev, void *, std::vector<std::byte> pattern, std::size_t count,
@@ -74,10 +89,13 @@ struct mock_ops final : device_ops {
   }
 };
 
+// Handle memory in one 256-byte aligned arena; 64 KiB per handle.
 struct mock_memory final : memory_service {
+  static constexpr std::size_t per_handle = 1 << 16;
   std::vector<std::string> log;
   std::vector<handle_state> handles;
-  std::vector<char> arena = std::vector<char>(1 << 16);
+  aligned_arena arena{1 << 24};
+  std::size_t toolchain_at = 1 << 23;
   std::map<std::size_t, migration> forced_migration;
   std::size_t add_handle(std::uint64_t type, std::size_t elem) override {
     handle_state h;
@@ -87,16 +105,16 @@ struct mock_memory final : memory_service {
     return handles.size() - 1;
   }
   const handle_state &handle(std::size_t i) const override { return handles.at(i); }
-  placement for_producer(std::size_t h, int dev, std::size_t count) override {
+  placement for_producer(std::size_t h, int dev, std::size_t count, const std::vector<op_id> &) override {
     log.push_back("for_producer " + std::to_string(h));
     placement p;
     p.mem.device = dev;
-    p.mem.ptr = arena.data() + 4096 * h;
+    p.mem.ptr = arena.base + per_handle * h;
     p.mem.capacity = count * handles[h].elem_bytes;
     handles[h].mem = p.mem;
     return p;
   }
-  std::optional<migration> for_reader(std::size_t h, int) override {
+  std::optional<migration> for_reader(std::size_t h, int, const std::vector<op_id> &) override {
     log.push_back("for_reader " + std::to_string(h));
     auto it = forced_migration.find(h);
     if (it == forced_migration.end())
@@ -114,42 +132,46 @@ struct mock_memory final : memory_service {
     handles[h].produced = true;
     handles[h].count = count;
   }
-  placement acquire_toolchain(int dev, std::size_t) override {
+  placement acquire_toolchain(int dev, std::size_t bytes, const std::vector<op_id> &) override {
     log.push_back("acquire_toolchain");
     placement p;
     p.mem.device = dev;
-    p.mem.ptr = arena.data() + 60000;
+    p.mem.ptr = arena.base + toolchain_at;
+    toolchain_at += (bytes + 255) / 256 * 256;
+    if (toolchain_at > arena.bytes)
+      toolchain_at = 1 << 23;
     return p;
   }
   void release_toolchain(int, const placement &, op_id op) override {
     log.push_back("release_toolchain " + std::to_string(op));
   }
   int released = 0;
-  void release_finished() override { ++released; }
-};
-
-struct mock_prep final : kernel_prep_service {
-  int calls = 0;
-  std::vector<std::vector<slot_binding>> seen;
-  prepared_kernel prepare(node_record &, const std::vector<slot_binding> &r, const device_limits &) override {
-    ++calls;
-    seen.push_back(r);
-    prepared_kernel p;
-    p.tree = std::make_shared<kernel_tree>();
-    return p;
+  int wait_alls_at_release = -1;
+  const mock_ops *ops = nullptr;
+  void release_finished() override {
+    ++released;
+    wait_alls_at_release = ops ? ops->wait_all_calls : -1;
   }
 };
 
+// Records every launch with its plan and composition.
 struct mock_launch final : launch_service {
   std::vector<std::vector<op_id>> deps;
+  std::vector<launch_plan> plans;
+  std::vector<kernel_launch_desc> descs;
+  std::vector<const hipsycl::glue::sscp::composition_config *> configs;
   int released = 0;
   device_ops *ops = nullptr;
-  op_id launch(int dev, const prepared_kernel &, const std::vector<slot_binding> &,
-               const std::vector<std::uint64_t> &, const placement &,
-               const std::vector<op_id> &d) override {
+  std::unique_ptr<launcher> real;
+  op_id launch(int dev, const launch_plan &p, const placement &t,
+               const hipsycl::glue::sscp::composition_config *cfg, const std::vector<op_id> &d) override {
     deps.push_back(d);
-    kernel_launch_desc kd;
-    return ops ? ops->launch(dev, kd, d) : 0;
+    plans.push_back(p);
+    configs.push_back(cfg);
+    descs.push_back(make_launch_desc(p, reinterpret_cast<std::uintptr_t>(t.mem.ptr), cfg));
+    if (!real)
+      real = std::make_unique<launcher>(*ops);
+    return real->launch(dev, p, t, cfg, d);
   }
   void release_finished() override { ++released; }
 };
@@ -157,25 +179,25 @@ struct mock_launch final : launch_service {
 struct rig {
   mock_ops *ops;
   mock_memory *mem;
-  mock_prep *prep;
   mock_launch *launch;
-  std::unique_ptr<sg::detail::graph_impl> impl;
-  rig() {
+  sg::detail::graph_impl *impl;
+  std::unique_ptr<sg::graph> g;
+  explicit rig(sg::graph_options o = {}) {
     graph_services s;
-    auto o = std::make_unique<mock_ops>();
+    auto op = std::make_unique<mock_ops>();
     auto m = std::make_unique<mock_memory>();
-    auto p = std::make_unique<mock_prep>();
     auto l = std::make_unique<mock_launch>();
-    ops = o.get();
+    ops = op.get();
     mem = m.get();
-    prep = p.get();
     launch = l.get();
     launch->ops = ops;
-    s.ops = std::move(o);
+    mem->ops = ops;
+    s.ops = std::move(op);
     s.memory = std::move(m);
-    s.prep = std::move(p);
     s.launch = std::move(l);
-    impl = std::make_unique<sg::detail::graph_impl>(sg::graph_options{}, std::move(s));
+    auto owned = std::make_unique<sg::detail::graph_impl>(o, std::move(s));
+    impl = owned.get();
+    g = std::make_unique<sg::graph>(std::move(owned));
   }
 };
 } // namespace sgt

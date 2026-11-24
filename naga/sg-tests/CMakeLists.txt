@@ -37,9 +37,9 @@ add_sycl_to_target(TARGET sg_tests SOURCES ${DEVICE_SRC})
 target_link_libraries(sg_tests PRIVATE Boost::unit_test_framework Threads::Threads)
 target_compile_definitions(sg_tests PRIVATE BOOST_TEST_DYN_LINK)
 
-add_executable(sg_jit_bench bench/main.cpp)
-add_sycl_to_target(TARGET sg_jit_bench SOURCES bench/main.cpp)
-target_link_libraries(sg_jit_bench PRIVATE Threads::Threads)
+add_executable(sg_chain_bench bench/chain_bench.cpp)
+add_sycl_to_target(TARGET sg_chain_bench SOURCES bench/chain_bench.cpp)
+target_link_libraries(sg_chain_bench PRIVATE Threads::Threads)
 
-install(TARGETS sg_host_tests sg_compiler_tests sg_driver_tests sg_tests sg_jit_bench RUNTIME DESTINATION bin)
+install(TARGETS sg_host_tests sg_compiler_tests sg_driver_tests sg_tests sg_chain_bench RUNTIME DESTINATION bin)
 install(DIRECTORY lit/ DESTINATION share/naga-sg-tests/lit)
