@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <functional>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace sg::detail {
@@ -24,7 +25,6 @@ struct block {
 
 struct placement {
   block mem;
-  std::vector<op_id> wait_for;
 };
 
 struct migration {
@@ -48,12 +48,13 @@ public:
   virtual ~memory_service() = default;
   virtual std::size_t add_handle(std::uint64_t type, std::size_t elem_bytes) = 0;
   virtual const handle_state &handle(std::size_t) const = 0;
-  virtual placement for_producer(std::size_t h, int device, std::size_t count) = 0;
-  virtual std::optional<migration> for_reader(std::size_t h, int device) = 0;
+  // deps of the allocating requests: the operations the work that will use the memory already depends on
+  virtual placement for_producer(std::size_t h, int device, std::size_t count, const std::vector<op_id> &deps) = 0;
+  virtual std::optional<migration> for_reader(std::size_t h, int device, const std::vector<op_id> &deps) = 0;
   virtual void commit_migration(std::size_t h, const migration &, op_id copy_op) = 0;
   virtual void note_use(std::size_t h, op_id) = 0;
   virtual void note_produced(std::size_t h, std::size_t count, op_id) = 0;
-  virtual placement acquire_toolchain(int device, std::size_t bytes) = 0;
+  virtual placement acquire_toolchain(int device, std::size_t bytes, const std::vector<op_id> &deps) = 0;
   virtual void release_toolchain(int device, const placement &, op_id last_user) = 0;
   virtual void release_finished() = 0;
 };
@@ -94,7 +95,7 @@ public:
   }
   const handle_state &handle(std::size_t i) const override { return handles_.at(i); }
 
-  placement for_producer(std::size_t i, int device, std::size_t count) override {
+  placement for_producer(std::size_t i, int device, std::size_t count, const std::vector<op_id> &deps) override {
     handle_state &h = handles_.at(i);
     const std::size_t bytes = count * h.elem_bytes;
     placement p;
@@ -106,7 +107,7 @@ public:
       p.mem = h.mem;
       return p;
     }
-    p = allocate_on(device, bytes);
+    p = allocate_on(device, bytes, deps, "handle " + std::to_string(i));
     release_block(h.mem, h.users);
     h.mem = p.mem;
     h.home = s_.place_of(device);
@@ -114,18 +115,20 @@ public:
     return p;
   }
 
-  std::optional<migration> for_reader(std::size_t i, int device) override {
+  std::optional<migration> for_reader(std::size_t i, int device, const std::vector<op_id> &deps) override {
     const handle_state &h = handles_.at(i);
     const place target = s_.place_of(device);
     const std::size_t bytes = h.count * h.elem_bytes;
     if (h.home == target || bytes == 0 || !h.mem.ptr)
       return std::nullopt;
-    placement a = allocate_on(device, bytes);
+    std::vector<op_id> copy_deps = deps;
+    if (h.last_producer != 0)
+      copy_deps.push_back(h.last_producer);
+    placement a = allocate_on(device, bytes, copy_deps, "handle " + std::to_string(i));
     migration m;
     m.from = h.mem;
     m.to = a.mem;
     m.plan = plan_copy(h.home, target, interval{0, bytes});
-    m.wait_for = a.wait_for;
     if (h.last_producer != 0)
       m.wait_for.push_back(h.last_producer);
     std::sort(m.wait_for.begin(), m.wait_for.end());
@@ -152,8 +155,8 @@ public:
     h.users.push_back(op);
   }
 
-  placement acquire_toolchain(int device, std::size_t bytes) override {
-    return allocate_on(device, bytes);
+  placement acquire_toolchain(int device, std::size_t bytes, const std::vector<op_id> &deps) override {
+    return allocate_on(device, bytes, deps, "the toolchain memory of a launch");
   }
   void release_toolchain(int device, const placement &p, op_id last_user) override {
     (void)device;
@@ -161,7 +164,7 @@ public:
   }
 
 private:
-  placement allocate_on(int device, std::size_t bytes) {
+  placement allocate_on(int device, std::size_t bytes, const std::vector<op_id> &deps, const std::string &what) {
     placement p;
     p.mem.device = device;
     if (bytes == 0)
@@ -170,11 +173,17 @@ private:
       p.mem.ptr = s_.host_alloc(bytes);
       p.mem.capacity = bytes;
     } else {
-      pool_block b = s_.pool_of(device).allocate(bytes);
-      p.mem.ptr = b.ptr;
-      p.mem.capacity = b.nodes * pool::node_bytes;
-      p.wait_for = b.wait_for;
-      p.mem.alloc = std::move(b);
+      try {
+        pool_block b = s_.pool_of(device).allocate(bytes, deps);
+        p.mem.ptr = b.ptr;
+        p.mem.capacity = b.nodes * pool::node_bytes;
+        p.mem.alloc = std::move(b);
+      } catch (const error &e) {
+        if (e.code() != errc::allocation_refused)
+          throw;
+        throw error{errc::allocation_refused, what + ": the device refused " + std::to_string(bytes) +
+                                                  " bytes (" + e.what() + ")"};
+      }
     }
     return p;
   }

@@ -2,18 +2,21 @@
 
 #include "hipSYCL/sg/detail/copy_plan.hpp"
 #include "hipSYCL/sg/detail/dependency.hpp"
+#include "hipSYCL/sg/detail/device_ops.hpp"
 #include "hipSYCL/sg/detail/memory_manager.hpp"
 #include "hipSYCL/sg/detail/pool.hpp"
-#include "hipSYCL/sg/detail/pool_config.hpp"
 #include "hipSYCL/sg/detail/role_check.hpp"
 #include "hipSYCL/sg/detail/slab_bitmap.hpp"
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <memory>
 #include <random>
+#include <set>
 
 using namespace sg::detail;
 
@@ -113,28 +116,21 @@ BOOST_AUTO_TEST_CASE(random_against_model) {
 }
 BOOST_AUTO_TEST_SUITE_END()
 
-BOOST_AUTO_TEST_SUITE(pool_config_suite)
-BOOST_AUTO_TEST_CASE(rule) {
-  BOOST_CHECK_EQUAL(pool_limit_rule(1000, 5000, 77), 77u);
-  BOOST_CHECK_EQUAL(pool_limit_rule(1000, 5000, 0), 800u);
-  BOOST_CHECK_EQUAL(pool_limit_rule(std::nullopt, 5000, 0), 4000u);
-  BOOST_CHECK_EQUAL(pool_limit_rule(0, 5000, 0), 0u);
-  const std::size_t big = std::numeric_limits<std::size_t>::max();
-  const std::size_t r = pool_limit_rule(std::nullopt, big, 0);
-  BOOST_CHECK(r < big && r > big / 10 * 7);
-}
-BOOST_AUTO_TEST_SUITE_END()
-
 namespace {
 struct arena {
-  std::vector<std::unique_ptr<char[]>> blocks;
+  struct raw_free {
+    void operator()(void *p) const { std::free(p); }
+  };
+  std::vector<std::unique_ptr<void, raw_free>> blocks;
   std::vector<std::size_t> allocs;
   std::vector<void *> frees;
+  std::size_t skew = 0; // makes the allocation start off the 256-byte boundary
   std::function<void *(std::size_t)> alloc() {
     return [this](std::size_t n) {
-      blocks.emplace_back(new char[n]);
+      void *p = std::aligned_alloc(256, (n + skew + 255) / 256 * 256);
+      blocks.emplace_back(p);
       allocs.push_back(n);
-      return static_cast<void *>(blocks.back().get());
+      return static_cast<void *>(static_cast<char *>(p) + skew);
     };
   }
   std::function<void(void *)> dealloc() {
@@ -144,7 +140,39 @@ struct arena {
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(pool_suite)
-BOOST_AUTO_TEST_CASE(eager_slabs) {
+BOOST_AUTO_TEST_CASE(a_zero_reservation_takes_nothing_until_the_first_request_and_then_one_slab) {
+  arena a;
+  {
+    pool p(0, 64u << 20, a.alloc(), a.dealloc());
+    BOOST_CHECK(a.allocs.empty());
+    BOOST_CHECK_EQUAL(p.slab_count(), 0u);
+    pool_block x = p.allocate(100, {});
+    BOOST_REQUIRE_EQUAL(a.allocs.size(), 1u);
+    BOOST_CHECK_EQUAL(a.allocs[0], pool::min_slab_bytes);
+    BOOST_CHECK_EQUAL(p.slab_count(), 1u);
+    BOOST_CHECK_EQUAL(x.nodes, 1u);
+  }
+}
+BOOST_AUTO_TEST_CASE(a_slab_is_the_request_rounded_up_to_the_minimum_and_capped_at_the_largest_allocation) {
+  arena a;
+  pool p(0, 64u << 20, a.alloc(), a.dealloc());
+  p.allocate(pool::min_slab_bytes + 1, {}); // above the minimum: the request plus alignment slack, in whole nodes
+  BOOST_REQUIRE_EQUAL(a.allocs.size(), 1u);
+  BOOST_CHECK_EQUAL(a.allocs[0], pool::min_slab_bytes + 2 * pool::node_bytes);
+  arena b;
+  pool q(0, 6 * 1024, b.alloc(), b.dealloc()); // the device's largest allocation is 6 KiB
+  q.allocate(2048, {});
+  BOOST_REQUIRE_EQUAL(b.allocs.size(), 1u);
+  BOOST_CHECK_EQUAL(b.allocs[0], 6 * 1024u);
+  try {
+    q.allocate(7 * 1024, {});
+    BOOST_FAIL("no throw");
+  } catch (const sg::error &e) {
+    BOOST_CHECK(e.code() == sg::errc::allocation_refused);
+    BOOST_CHECK(std::string(e.what()).find("7168") != std::string::npos);
+  }
+}
+BOOST_AUTO_TEST_CASE(a_reservation_of_r_bytes_is_taken_at_construction_and_requests_that_fit_take_nothing_more) {
   arena a;
   {
     pool p(10 * 1024 + 500, 4 * 1024 + 7, a.alloc(), a.dealloc());
@@ -153,67 +181,76 @@ BOOST_AUTO_TEST_CASE(eager_slabs) {
     BOOST_CHECK_EQUAL(a.allocs[1], 4096u);
     BOOST_CHECK_EQUAL(a.allocs[2], 2048u);
     BOOST_CHECK_EQUAL(p.reserved(), 10240u);
+    p.allocate(3000, {});
+    p.allocate(3000, {});
+    p.allocate(2000, {});
+    BOOST_CHECK_EQUAL(a.allocs.size(), 3u);
   }
-  BOOST_CHECK_EQUAL(a.frees.size(), 3u);
+  BOOST_CHECK_EQUAL(a.frees.size(), 3u); // every slab returned exactly once
 }
 BOOST_AUTO_TEST_CASE(allocate_basics) {
   arena a;
   pool p(8 * 1024, 4 * 1024, a.alloc(), a.dealloc());
-  BOOST_CHECK(p.allocate(0).ptr == nullptr);
-  pool_block x = p.allocate(1);
-  pool_block y = p.allocate(1025);
+  BOOST_CHECK(p.allocate(0, {}).ptr == nullptr);
+  pool_block x = p.allocate(1, {});
+  pool_block y = p.allocate(1025, {});
   BOOST_CHECK_EQUAL(x.nodes, 1u);
   BOOST_CHECK_EQUAL(y.nodes, 2u);
   BOOST_CHECK(static_cast<char *>(y.ptr) == static_cast<char *>(x.ptr) + 1024);
   BOOST_CHECK_EQUAL(p.used(), 3 * 1024u);
-  pool_block z = p.allocate(4096); // does not fit slab 0 any more, goes to slab 1
+  pool_block z = p.allocate(4096, {}); // does not fit slab 0 any more, goes to slab 1
   BOOST_CHECK_EQUAL(z.slab, 1u);
 }
-BOOST_AUTO_TEST_CASE(exhausted_messages) {
+BOOST_AUTO_TEST_CASE(a_block_is_reused_only_when_its_last_users_finished_or_are_dependencies) {
   arena a;
-  pool p(4 * 1024, 4 * 1024, a.alloc(), a.dealloc());
-  pool_block x = p.allocate(1024);
-  p.allocate(1024);
-  pool_block z = p.allocate(1024);
-  p.allocate(1024);
-  p.release(x, {});
-  p.release(z, {});
-  try {
-    p.allocate(2048);
-    BOOST_FAIL("no throw");
-  } catch (const sg::error &e) {
-    BOOST_CHECK(e.code() == sg::errc::pool_exhausted);
-    BOOST_CHECK(std::string(e.what()).find("fragmented") != std::string::npos);
-    BOOST_CHECK(std::string(e.what()).find("2048") != std::string::npos);
-  }
-  try {
-    p.allocate(8192);
-    BOOST_FAIL("no throw");
-  } catch (const sg::error &e) {
-    BOOST_CHECK(std::string(e.what()).find("full") != std::string::npos);
-  }
+  std::set<op_id> done;
+  pool p(0, 2048, a.alloc(), a.dealloc(), [&done](op_id o) { return done.count(o) != 0; }); // a slab holds one block
+  pool_block x = p.allocate(2048, {});
+  p.release(x, {5, 6}); // 5 and 6 are unfinished
+  BOOST_CHECK_EQUAL(p.slab_count(), 1u);
+  // 6 is not a dependency of the request: not reused, a new slab is taken
+  pool_block y = p.allocate(2048, {5});
+  BOOST_CHECK_EQUAL(p.slab_count(), 2u);
+  BOOST_CHECK(y.slab == 1u);
+  // both users are dependencies of the request: reused, nothing new taken
+  pool_block z = p.allocate(2048, {5, 6, 9});
+  BOOST_CHECK_EQUAL(p.slab_count(), 2u);
+  BOOST_CHECK(z.ptr == x.ptr);
+  // finished users need no dependency
+  p.release(z, {5, 6});
+  done = {5, 6};
+  pool_block w = p.allocate(2048, {});
+  BOOST_CHECK_EQUAL(p.slab_count(), 2u);
+  BOOST_CHECK(w.ptr == x.ptr);
 }
-BOOST_AUTO_TEST_CASE(reuse_and_waits) {
-  arena a;
-  pool p(4 * 1024, 4 * 1024, a.alloc(), a.dealloc());
-  pool_block x = p.allocate(2048);
-  void *ptr = x.ptr;
-  p.release(x, {5, 6});
-  pool_block y = p.allocate(2048);
-  BOOST_CHECK(y.ptr == ptr);
-  BOOST_CHECK((y.wait_for == std::vector<op_id>{5, 6}));
-  p.release(y, {9});
-  pool_block z = p.allocate(1024);
-  BOOST_CHECK((z.wait_for == std::vector<op_id>{9}));
-  pool_block w = p.allocate(1024);
-  BOOST_CHECK((w.wait_for == std::vector<op_id>{9}));
-  pool_block v = p.allocate(1024);
-  BOOST_CHECK(v.wait_for.empty());
+BOOST_AUTO_TEST_CASE(randomized_steps_never_overlap_and_stay_aligned) {
+  for (std::size_t skew : {std::size_t{0}, std::size_t{16}}) {
+    arena a;
+    a.skew = skew;
+    pool p(256 * 1024, 64 * 1024, a.alloc(), a.dealloc());
+    std::mt19937 rng(777);
+    std::vector<pool_block> live;
+    for (int step = 0; step < 10000; ++step) {
+      if (live.empty() || rng() % 2) {
+        pool_block b = p.allocate(1 + rng() % 9000, {});
+        BOOST_REQUIRE(reinterpret_cast<std::uintptr_t>(b.ptr) % 256 == 0);
+        for (const pool_block &o : live) {
+          const char *lo = static_cast<const char *>(b.ptr), *ol = static_cast<const char *>(o.ptr);
+          BOOST_REQUIRE(lo + b.nodes * pool::node_bytes <= ol || ol + o.nodes * pool::node_bytes <= lo);
+        }
+        live.push_back(b);
+      } else {
+        const std::size_t k = rng() % live.size();
+        p.release(live[k], {});
+        live.erase(live.begin() + k);
+      }
+    }
+  }
 }
 BOOST_AUTO_TEST_CASE(double_release_throws_and_determinism) {
   arena a;
   pool p(4 * 1024, 4 * 1024, a.alloc(), a.dealloc());
-  pool_block x = p.allocate(1024);
+  pool_block x = p.allocate(1024, {});
   p.release(x, {});
   SG_CHECK_ERRC(p.release(x, {}), internal);
 }
@@ -399,14 +436,27 @@ namespace {
 struct mem_env {
   arena ar;
   std::map<int, std::unique_ptr<pool>> pools;
+  std::set<op_id> finished_ops;
+  std::size_t reservation = 0;
+  std::size_t largest = 64u << 20; // the device's largest single allocation
+  std::size_t refuse_above = std::numeric_limits<std::size_t>::max(); // the device refuses larger requests
   std::vector<std::string> log;
   std::vector<void *> host_live;
   memory_manager::services services() {
     memory_manager::services s;
     s.pool_of = [this](int d) -> pool & {
       auto &p = pools[d];
-      if (!p)
-        p = std::make_unique<pool>(16 * 1024, 16 * 1024, ar.alloc(), ar.dealloc());
+      if (!p) {
+        auto alloc = ar.alloc();
+        p = std::make_unique<pool>(
+            reservation, largest,
+            [this, alloc](std::size_t n) -> void * {
+              if (n > refuse_above)
+                throw sg::error{sg::errc::allocation_refused, "refused " + std::to_string(n)};
+              return alloc(n);
+            },
+            ar.dealloc(), [this](op_id o) { return finished_ops.count(o) != 0; });
+      }
       return *p;
     };
     s.host_alloc = [this](std::size_t n) {
@@ -434,25 +484,24 @@ BOOST_AUTO_TEST_CASE(producer_allocates_and_fits) {
   mem_env env;
   memory_manager m(env.services());
   const auto h = m.add_handle(1, 4);
-  auto p = m.for_producer(h, 0, 100);
+  auto p = m.for_producer(h, 0, 100, {});
   BOOST_CHECK(p.mem.ptr != nullptr);
   BOOST_CHECK_EQUAL(p.mem.device, 0);
   BOOST_CHECK(!m.handle(h).produced);
   m.note_produced(h, 100, 7);
   BOOST_CHECK(m.handle(h).produced);
   env.log.clear();
-  auto q = m.for_producer(h, 0, 200);
+  auto q = m.for_producer(h, 0, 200, {});
   BOOST_CHECK(q.mem.ptr == p.mem.ptr);
-  BOOST_CHECK(q.wait_for.empty());
   BOOST_CHECK(env.log.empty());
 }
 BOOST_AUTO_TEST_CASE(growth_releases_without_waiting) {
   mem_env env;
   memory_manager m(env.services());
   const auto h = m.add_handle(1, 4);
-  auto p = m.for_producer(h, 0, 100);
+  auto p = m.for_producer(h, 0, 100, {});
   m.note_produced(h, 100, 7);
-  auto q = m.for_producer(h, 0, 1000);
+  auto q = m.for_producer(h, 0, 1000, {});
   BOOST_CHECK(q.mem.ptr != p.mem.ptr);
   BOOST_CHECK(std::none_of(env.log.begin(), env.log.end(),
                            [](const std::string &l) { return l.rfind("wait", 0) == 0; }));
@@ -462,9 +511,9 @@ BOOST_AUTO_TEST_CASE(host_block_freed_only_by_release_finished) {
   mem_env env;
   memory_manager m(env.services());
   const auto h = m.add_handle(1, 4);
-  m.for_producer(h, -1, 10);
+  m.for_producer(h, -1, 10, {});
   m.note_produced(h, 10, 7);
-  auto mig = m.for_reader(h, 0);
+  auto mig = m.for_reader(h, 0, {});
   BOOST_REQUIRE(mig.has_value());
   m.commit_migration(h, *mig, 9);
   BOOST_CHECK_EQUAL(env.host_live.size(), 1u);
@@ -478,27 +527,100 @@ BOOST_AUTO_TEST_CASE(host_growth_defers_the_old_block) {
   mem_env env;
   memory_manager m(env.services());
   const auto h = m.add_handle(1, 4);
-  m.for_producer(h, -1, 10);
+  m.for_producer(h, -1, 10, {});
   m.note_produced(h, 10, 7);
-  m.for_producer(h, -1, 100);
+  m.for_producer(h, -1, 100, {});
   BOOST_CHECK_EQUAL(env.host_live.size(), 2u);
   m.release_finished();
   BOOST_CHECK_EQUAL(env.host_live.size(), 1u);
 }
-BOOST_AUTO_TEST_CASE(pool_error_leaves_state) {
+BOOST_AUTO_TEST_CASE(with_a_zero_reservation_nothing_is_taken_before_the_first_request_which_takes_one_slab) {
   mem_env env;
   memory_manager m(env.services());
   const auto h = m.add_handle(1, 4);
-  auto p = m.for_producer(h, 0, 100);
-  SG_CHECK_ERRC(m.for_producer(h, 0, 1u << 20), pool_exhausted);
-  BOOST_CHECK(m.handle(h).mem.ptr == p.mem.ptr);
+  BOOST_CHECK(env.ar.allocs.empty());
+  m.for_producer(h, 0, 100, {});
+  BOOST_CHECK_EQUAL(env.ar.allocs.size(), 1u);
+  BOOST_CHECK_EQUAL(env.pools.at(0)->slab_count(), 1u);
+}
+BOOST_AUTO_TEST_CASE(a_request_the_device_refuses_names_the_handle_and_the_size) {
+  mem_env env;
+  env.refuse_above = 1024;
+  memory_manager m(env.services());
+  m.add_handle(1, 4);
+  const auto h = m.add_handle(1, 4);
+  try {
+    m.for_producer(h, 0, 1000, {});
+    BOOST_FAIL("no throw");
+  } catch (const sg::error &e) {
+    BOOST_CHECK(e.code() == sg::errc::allocation_refused);
+    const std::string w = e.what();
+    BOOST_CHECK(w.find("handle 1") != std::string::npos);
+    BOOST_CHECK(w.find("4000") != std::string::npos);
+  }
+  BOOST_CHECK(m.handle(h).mem.ptr == nullptr);
+}
+BOOST_AUTO_TEST_CASE(a_free_block_with_an_unfinished_unrelated_user_is_not_reused) {
+  mem_env env;
+  env.largest = 4096; // a slab holds one block of 4000 bytes
+  memory_manager m(env.services());
+  const auto b = m.add_handle(1, 1);
+  auto t = m.acquire_toolchain(0, 4000, {});
+  m.release_toolchain(0, t, 11); // the block is free; its last user, operation 11, is unfinished
+  BOOST_CHECK_EQUAL(env.pools.at(0)->slab_count(), 1u);
+  m.for_producer(b, 0, 4000, {}); // 11 is not a dependency of the request: a new slab
+  BOOST_CHECK_EQUAL(env.pools.at(0)->slab_count(), 2u);
+}
+BOOST_AUTO_TEST_CASE(a_free_block_whose_user_finished_or_is_a_dependency_is_reused_with_no_slab_taken) {
+  for (int how : {0, 1}) {
+    mem_env env;
+    env.largest = 4096;
+    memory_manager m(env.services());
+    const auto b = m.add_handle(1, 1);
+    auto t = m.acquire_toolchain(0, 4000, {});
+    m.release_toolchain(0, t, 11);
+    if (how == 0)
+      env.finished_ops.insert(11); // finished
+    // how == 1: operation 11 is a dependency of the requesting work
+    auto pb = m.for_producer(b, 0, 4000, how == 1 ? std::vector<op_id>{11} : std::vector<op_id>{});
+    BOOST_CHECK_EQUAL(env.pools.at(0)->slab_count(), 1u);
+    BOOST_CHECK(pb.mem.ptr == t.mem.ptr);
+  }
+}
+BOOST_AUTO_TEST_CASE(a_reservation_is_taken_at_first_use_and_requests_that_fit_take_nothing_more) {
+  mem_env env;
+  env.reservation = 16 * 1024;
+  env.largest = 16 * 1024;
+  memory_manager m(env.services());
+  const auto h = m.add_handle(1, 4);
+  const auto g = m.add_handle(1, 4);
+  m.for_producer(h, 0, 100, {});
+  BOOST_CHECK_EQUAL(env.ar.allocs.size(), 1u);
+  m.for_producer(g, 0, 3000, {});
+  BOOST_CHECK_EQUAL(env.ar.allocs.size(), 1u);
+}
+BOOST_AUTO_TEST_CASE(destroying_the_pools_returns_every_slab_exactly_once) {
+  mem_env env;
+  env.largest = 4096;
+  {
+    memory_manager m(env.services());
+    const auto h = m.add_handle(1, 1);
+    const auto g = m.add_handle(1, 1);
+    m.for_producer(h, 0, 4000, {});
+    m.for_producer(g, 0, 4000, {});
+    BOOST_CHECK_EQUAL(env.ar.allocs.size(), 2u);
+  }
+  BOOST_CHECK(env.ar.frees.empty()); // slabs stay with the pool until it is destroyed
+  env.pools.clear();
+  BOOST_REQUIRE_EQUAL(env.ar.frees.size(), 2u);
+  BOOST_CHECK(env.ar.frees[0] != env.ar.frees[1]);
 }
 BOOST_AUTO_TEST_CASE(host_handles) {
   mem_env env;
   {
     memory_manager m(env.services());
     const auto h = m.add_handle(1, 4);
-    m.for_producer(h, -1, 10);
+    m.for_producer(h, -1, 10, {});
     BOOST_CHECK_EQUAL(m.handle(h).mem.device, -1);
     BOOST_CHECK_EQUAL(env.host_live.size(), 1u);
   }
@@ -508,29 +630,45 @@ BOOST_AUTO_TEST_CASE(readers_and_migration) {
   mem_env env;
   memory_manager m(env.services());
   const auto h = m.add_handle(1, 4);
-  m.for_producer(h, 0, 100);
+  m.for_producer(h, 0, 100, {});
   m.note_produced(h, 100, 7);
-  BOOST_CHECK(!m.for_reader(h, 0).has_value());
-  auto direct = m.for_reader(h, 1);
+  BOOST_CHECK(!m.for_reader(h, 0, {}).has_value());
+  auto direct = m.for_reader(h, 1, {});
   BOOST_REQUIRE(direct.has_value());
   BOOST_CHECK(direct->plan.kind == copy_kind::direct);
   BOOST_CHECK(std::find(direct->wait_for.begin(), direct->wait_for.end(), 7u) !=
               direct->wait_for.end());
   BOOST_CHECK_EQUAL(m.handle(h).mem.device, 0); // for_reader changed nothing
-  auto staged = m.for_reader(h, 2);
+  auto staged = m.for_reader(h, 2, {});
   BOOST_REQUIRE(staged.has_value());
   BOOST_CHECK(staged->plan.kind == copy_kind::staged_via_host);
   m.commit_migration(h, *staged, 9);
   BOOST_CHECK_EQUAL(m.handle(h).mem.device, 2);
   BOOST_CHECK((m.handle(h).users == std::vector<op_id>{9}));
 }
+BOOST_AUTO_TEST_CASE(fill_writes_exactly_the_requested_elements) {
+  for (std::size_t bytes : {1u, 2u, 4u, 12u, 16u}) {
+    std::vector<unsigned char> buf(67 * bytes + 2 * 16, 0xee);
+    std::vector<unsigned char> pattern(bytes);
+    for (std::size_t i = 0; i < bytes; ++i)
+      pattern[i] = static_cast<unsigned char>(i + 1);
+    fill_range(buf.data() + 16, pattern.data(), bytes, 67);
+    for (std::size_t i = 0; i < 16; ++i) {
+      BOOST_CHECK_EQUAL(buf[i], 0xee);
+      BOOST_CHECK_EQUAL(buf[16 + 67 * bytes + i], 0xee);
+    }
+    for (std::size_t e = 0; e < 67; ++e)
+      for (std::size_t b = 0; b < bytes; ++b)
+        BOOST_REQUIRE_EQUAL(buf[16 + e * bytes + b], pattern[b]);
+  }
+}
 BOOST_AUTO_TEST_CASE(toolchain) {
   mem_env env;
   memory_manager m(env.services());
-  auto a = m.acquire_toolchain(0, 2048);
+  auto a = m.acquire_toolchain(0, 2048, {});
   m.release_toolchain(0, a, 5);
-  auto b = m.acquire_toolchain(0, 2048);
+  auto b = m.acquire_toolchain(0, 2048, {5}); // the launch depends on the previous launch: its block is reused
   BOOST_CHECK(b.mem.ptr == a.mem.ptr);
-  BOOST_CHECK((b.wait_for == std::vector<op_id>{5}));
+  BOOST_CHECK_EQUAL(env.ar.allocs.size(), 1u);
 }
 BOOST_AUTO_TEST_SUITE_END()

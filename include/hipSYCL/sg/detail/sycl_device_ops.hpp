@@ -67,7 +67,7 @@ public:
   void *allocate(int dev, std::size_t bytes) override {
     void *p = sycl::malloc_device(bytes, devices_.at(dev), contexts_.at(dev));
     if (!p)
-      throw error{errc::pool_exhausted,
+      throw error{errc::allocation_refused,
                   "the device refused an allocation of " + std::to_string(bytes) + " bytes"};
     return p;
   }
@@ -82,15 +82,23 @@ public:
              const std::vector<op_id> &deps) override {
     if (dev < 0 || count == 0 || pattern.empty())
       return host_task([] {}, deps);
-    std::array<unsigned char, 8> pat{};
-    const std::size_t psz = std::min<std::size_t>(pattern.size(), 8);
+    if (pattern.size() > 16)
+      throw error{errc::limit_exceeded, "a fill pattern is at most 16 bytes"};
+    std::array<unsigned char, 16> pat{};
+    const std::size_t psz = pattern.size();
     std::memcpy(pat.data(), pattern.data(), psz);
     unsigned char *out = static_cast<unsigned char *>(dst);
     return submit(dev, deps, [=](sycl::handler &h) {
-      h.parallel_for(sycl::range<1>(count), [=](sycl::id<1> i) {
-        for (std::size_t b = 0; b < psz; ++b)
-          out[i[0] * psz + b] = pat[b];
-      });
+      constexpr std::size_t group = 128;
+      const std::size_t rounded = (count + group - 1) / group * group;
+      h.parallel_for(sycl::nd_range<1>(sycl::range<1>(rounded), sycl::range<1>(group)),
+                     [=](sycl::nd_item<1> it) {
+                       const std::size_t i = it.get_global_id(0);
+                       if (i >= count)
+                         return;
+                       for (std::size_t b = 0; b < psz; ++b)
+                         out[i * psz + b] = pat[b];
+                     });
     });
   }
 
@@ -99,11 +107,19 @@ public:
   }
 
   op_id launch(int dev, const kernel_launch_desc &d, const std::vector<op_id> &deps) override {
+    if (d.data_args.size() != 1)
+      throw error{errc::internal, "the generic kernel takes exactly one data argument"};
+    const std::uintptr_t block = d.data_args[0];
     return submit(dev, deps, [&](sycl::handler &h) {
+      if (d.items) {
+        item_kernel k{block, {hipsycl::glue::sscp::hide_composition_pointer(d.config)}};
+        constexpr std::size_t group = 128;
+        const std::size_t rounded = (static_cast<std::size_t>(d.n_items) + group - 1) / group * group;
+        h.parallel_for(sycl::nd_range<1>(sycl::range<1>(rounded), sycl::range<1>(group)), k);
+        return;
+      }
       sycl::local_accessor<std::byte, 1> frame{sycl::range<1>(d.local_bytes), h};
-      generic_kernel k{d.ctx,
-                       {hipsycl::glue::sscp::hide_composition_pointer(d.config)},
-                       frame};
+      generic_kernel k{block, {hipsycl::glue::sscp::hide_composition_pointer(d.config)}, frame};
       h.parallel_for(sycl::nd_range<1>{sycl::range<1>(d.groups * d.work_group_size),
                                        sycl::range<1>(d.work_group_size)},
                      k);

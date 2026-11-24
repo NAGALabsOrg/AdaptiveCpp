@@ -8,6 +8,9 @@
 #include "hipSYCL/sg/detail/dependency.hpp"
 #include "hipSYCL/sg/detail/dev/abi.hpp"
 #include "hipSYCL/sg/detail/launch_plan.hpp"
+#include "hipSYCL/sg/error.hpp"
+
+#include <sycl/sycl.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -26,9 +29,19 @@ struct device_desc {
 
 struct kernel_launch_desc {
   std::size_t groups = 0, work_group_size = 1, local_bytes = 256;
-  dev::launch_ctx ctx{};
+  std::vector<std::uintptr_t> data_args; // the kernel's data arguments: the bound block, 256-byte aligned
+  bool items = false;                    // a plain range of work items
+  std::uint64_t n_items = 0;
   const hipsycl::glue::sscp::composition_config *config = nullptr;
 };
+
+// Writes `count` copies of a pattern of 1 to 16 bytes, one element after the other.
+inline void fill_range(unsigned char *dst, const unsigned char *pattern, std::size_t pattern_bytes,
+                       std::size_t count) {
+  for (std::size_t i = 0; i < count; ++i)
+    for (std::size_t b = 0; b < pattern_bytes; ++b)
+      dst[i * pattern_bytes + b] = pattern[b];
+}
 
 class device_ops {
 public:

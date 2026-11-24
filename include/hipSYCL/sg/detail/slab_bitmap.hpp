@@ -41,6 +41,17 @@ public:
     return start;
   }
 
+  // Takes the n free slots from first on; every one of them must be free.
+  void claim(std::size_t first, std::size_t n) {
+    if (first >= slot_count_ || n > slot_count_ - first)
+      throw error{errc::internal, "slab_bitmap::claim: range out of bounds"};
+    for (std::size_t i = 0; i < n; ++i)
+      if (!is_free(first + i))
+        throw error{errc::internal, "slab_bitmap::claim: slot is not free"};
+    for (std::size_t i = 0; i < n; ++i)
+      mark_used(first + i);
+  }
+
   void release(std::size_t first, std::size_t n) {
     if (n == 0)
       return;
