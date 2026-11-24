@@ -1,144 +1,109 @@
 #include "../common/check.hpp"
+#include "../common/graphs.hpp"
+#include "../common/mocks.hpp"
 
-#include "hipSYCL/sg/detail/array_rep.hpp"
-#include "hipSYCL/sg/detail/closure.hpp"
-#include "hipSYCL/sg/detail/type_id.hpp"
-#include "hipSYCL/sg/error.hpp"
+#include <algorithm>
+#include <set>
+#include <string>
 
-#include <cstring>
-#include <sycl/sycl.hpp>
+using namespace sgt;
 
-namespace a { struct S {}; }
-namespace b { struct S {}; }
+BOOST_AUTO_TEST_SUITE(roles)
 
-using namespace sg::detail;
-
-BOOST_AUTO_TEST_SUITE(type_id_suite)
-BOOST_AUTO_TEST_CASE(fnv_vectors) {
-  BOOST_CHECK_EQUAL(fnv1a64(""), 0xcbf29ce484222325ull);
-  BOOST_CHECK_EQUAL(fnv1a64("a"), 0xaf63dc4c8601ec8cull);
+BOOST_AUTO_TEST_CASE(a_handle_is_a_source_or_a_result_not_both) {
+  rig r;
+  auto h = r.g->create_mem_handle<float>();
+  try {
+    r.g->submit(sycl::device{}, [&](sg::kernel_handle &kh) {
+      auto x = kh.source(h, sg::shape<1>({64}));
+      auto items = kh.work_items({64});
+      auto y = kh.map_items(items, [=](auto item) {
+        auto v = x[item.id()];
+        return item.compute(v, step_fn);
+      });
+      kh.evaluate(h, y);
+    });
+    BOOST_FAIL("no throw");
+  } catch (const sg::error &e) {
+    BOOST_CHECK(e.code() == sg::errc::build);
+    BOOST_CHECK(std::string(e.what()).find("handle 0") != std::string::npos);
+  }
 }
-BOOST_AUTO_TEST_CASE(ids) {
-  BOOST_CHECK_EQUAL(type_id<int>(), type_id<int>());
-  BOOST_CHECK_NE(type_id<int>(), type_id<unsigned>());
-  BOOST_CHECK_NE(type_id<a::S>(), type_id<b::S>());
-  BOOST_CHECK_NE(type_id<sycl::plus<>>(), type_id<sycl::minimum<>>());
+
+BOOST_AUTO_TEST_CASE(the_graph_example_orders_host_work_before_the_kernel) {
+  rig r;
+  auto x = r.g->create_mem_handle<float>();
+  auto n = r.g->create_mem_handle<int>();
+  auto y = r.g->create_mem_handle<float>();
+  host_write(*r.g, n, std::vector<int>{64});
+  host_write(*r.g, x, iota_f(64));
+  r.g->submit(sycl::device{}, [&](sg::kernel_handle &kh) { rerun_a(kh, x, n, y); });
+  r.g->run();
+  BOOST_REQUIRE_EQUAL(r.ops->hosts.size(), 2u);
+  BOOST_REQUIRE_EQUAL(r.ops->launches.size(), 1u);
+  BOOST_REQUIRE_EQUAL(r.launch->deps.size(), 1u);
+  const auto &deps = r.launch->deps[0];
+  // the two host nodes are operations 1 and 2; the launch waits on both
+  BOOST_CHECK(std::find(deps.begin(), deps.end(), 1u) != deps.end());
+  BOOST_CHECK(std::find(deps.begin(), deps.end(), 2u) != deps.end());
+  BOOST_CHECK_EQUAL(r.ops->log.back(), "launch");
 }
+
+BOOST_AUTO_TEST_CASE(a_read_before_any_producer_is_an_error) {
+  rig r;
+  auto x = r.g->create_mem_handle<float>();
+  auto y = r.g->create_mem_handle<float>();
+  r.g->submit(sycl::device{}, [&](sg::kernel_handle &kh) { k9(kh, x, y); });
+  SG_CHECK_ERRC(r.g->run(), never_produced);
+}
+
+BOOST_AUTO_TEST_CASE(inplace_with_an_operation_that_cannot_combine_is_a_compile_error) {
+  // lit/fail/inplace_op_not_invocable.cpp holds the program; here only the positive form
+  static_assert(std::is_invocable_r_v<float, sycl::plus<float>, float, float>);
+  BOOST_CHECK(true);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
-BOOST_AUTO_TEST_SUITE(error_suite)
-BOOST_AUTO_TEST_CASE(round_trip) {
-  sg::error e{sg::errc::size_mismatch, "four"};
-  BOOST_CHECK(e.code() == sg::errc::size_mismatch);
-  BOOST_CHECK_EQUAL(std::string(e.what()), "four");
-  BOOST_CHECK_EQUAL(std::string(sg::to_string(sg::errc::pool_exhausted)), "pool_exhausted");
-  BOOST_CHECK_EQUAL(std::string(sg::to_string(sg::errc::internal)), "internal");
-  BOOST_CHECK_EQUAL(std::string(sg::to_string(sg::errc::role_conflict)), "role_conflict");
-}
-BOOST_AUTO_TEST_SUITE_END()
+BOOST_AUTO_TEST_SUITE(errors)
 
-BOOST_AUTO_TEST_SUITE(array_rep_suite)
-BOOST_AUTO_TEST_CASE(sentinels) {
-  for (int rank = 1; rank <= 3; ++rank)
-    for (std::uint32_t slot : {0u, 1u, 2u, (1u << 24) - 1}) {
-      const auto s = sentinel(rank, slot);
-      BOOST_CHECK(is_sentinel(s));
-      BOOST_CHECK_EQUAL(sentinel_rank(s), rank);
-      BOOST_CHECK_EQUAL(sentinel_slot(s), slot);
-    }
-  BOOST_CHECK(!is_sentinel(0));
-  BOOST_CHECK(!is_sentinel(5));
-  BOOST_CHECK(!is_sentinel(0x00007f0012345678ull));
+BOOST_AUTO_TEST_CASE(text_has_construct_location_explanation_and_numbers) {
+  const sg::build_error e(1, "kh.work_tiles", {"f.cpp", 10}, "the work tile does not fit", {{"cap", 1024}});
+  const std::string w = e.what();
+  BOOST_CHECK_EQUAL(w, "kh.work_tiles at f.cpp:10: the work tile does not fit (cap = 1024)");
+  BOOST_CHECK_EQUAL(e.rule(), 1);
+  BOOST_CHECK_EQUAL(e.construct(), "kh.work_tiles");
+  BOOST_REQUIRE_EQUAL(e.numbers().size(), 1u);
+  BOOST_CHECK_EQUAL(e.numbers()[0].value, 1024);
 }
-BOOST_AUTO_TEST_SUITE_END()
 
-namespace {
-std::vector<std::byte> bytes(std::size_t n) { return std::vector<std::byte>(n, std::byte{0}); }
-void put64(std::vector<std::byte> &b, std::size_t o, std::uint64_t v) { std::memcpy(b.data() + o, &v, 8); }
-} // namespace
+BOOST_AUTO_TEST_CASE(numbers_are_rendered_in_order) {
+  const sg::build_error e(2, "kh.work_tiles", {"a.cpp", 3}, "x", {{"tile_rank", 3}, {"run", 4}});
+  BOOST_CHECK(std::string(e.what()).find("(tile_rank = 3, run = 4)") != std::string::npos);
+}
 
-BOOST_AUTO_TEST_SUITE(closure_suite)
-BOOST_AUTO_TEST_CASE(sites) {
-  auto b = bytes(128);
-  put64(b, 0, sentinel(2, 3));
-  put64(b, 32, sentinel(1, 7));
-  put64(b, 64, sentinel(3, 0));
-  const auto s = find_patch_sites(b);
-  BOOST_REQUIRE_EQUAL(s.size(), 3u);
-  BOOST_CHECK_EQUAL(s[0].offset, 0u);
-  BOOST_CHECK_EQUAL(s[0].rank, 2);
-  BOOST_CHECK_EQUAL(s[0].slot, 3u);
-  BOOST_CHECK_EQUAL(s[1].offset, 32u);
-  BOOST_CHECK_EQUAL(s[1].slot, 7u);
-  BOOST_CHECK_EQUAL(s[2].offset, 64u);
-  BOOST_CHECK_EQUAL(s[2].rank, 3);
+BOOST_AUTO_TEST_CASE(the_catalogue_lists_fifteen_rejections) {
+  const auto &c = sg::rejection_catalogue();
+  BOOST_REQUIRE_EQUAL(c.size(), 15u);
+  for (std::size_t i = 0; i < c.size(); ++i)
+    BOOST_CHECK_EQUAL(c[i].number, static_cast<int>(i) + 1);
+  const char *constructs[15] = {"kh.work_tiles",
+                                "kh.work_tiles",
+                                "kh.index_map",
+                                "kh.mark_local",
+                                "kh.mark_local<sg::segmented>",
+                                "unit.run_replicated",
+                                "kh.map_items",
+                                "launch_value",
+                                "kh.mark_local",
+                                "kh.map_items",
+                                "kh.map_work",
+                                "kh.join",
+                                "kh.slice_work",
+                                "unit.run",
+                                "sg::interop"};
+  for (std::size_t i = 0; i < 15; ++i)
+    BOOST_CHECK_EQUAL(std::string(c[i].construct), constructs[i]);
 }
-BOOST_AUTO_TEST_CASE(adjacent_arrays) {
-  auto b = bytes(64);
-  put64(b, 0, sentinel(1, 0));
-  put64(b, 32, sentinel(1, 1));
-  BOOST_CHECK_EQUAL(find_patch_sites(b).size(), 2u);
-}
-BOOST_AUTO_TEST_CASE(skipped_candidates) {
-  auto b = bytes(64);
-  put64(b, 0, sentinel(0, 1));
-  put64(b, 32, sentinel(4, 1));
-  BOOST_CHECK(find_patch_sites(b).empty());
-  auto u = bytes(64);
-  put64(u, 4, sentinel(1, 1)); // unaligned
-  BOOST_CHECK(find_patch_sites(u).empty());
-  auto t = bytes(40);
-  put64(t, 16, sentinel(1, 1)); // 16 + 32 > 40
-  BOOST_CHECK(find_patch_sites(t).empty());
-}
-BOOST_AUTO_TEST_CASE(ordinary_pointers) {
-  auto b = bytes(64);
-  put64(b, 0, 0x00007ffd12345678ull);
-  put64(b, 8, 12345);
-  BOOST_CHECK(find_patch_sites(b).empty());
-}
-struct two_arrays {
-  array_rep x, y;
-  int k;
-};
-BOOST_AUTO_TEST_CASE(capture) {
-  two_arrays c{};
-  c.x.address = sentinel(2, 4);
-  c.x.extent[0] = 3;
-  c.y.address = sentinel(1, 9);
-  c.k = 77;
-  const closure_entry e = capture_closure(c);
-  BOOST_CHECK_EQUAL(e.bytes.size(), sizeof(c));
-  BOOST_CHECK_EQUAL(e.align, alignof(two_arrays));
-  BOOST_REQUIRE_EQUAL(e.sites.size(), 2u);
-  BOOST_CHECK_EQUAL(e.sites[0].slot, 4u);
-  BOOST_CHECK_EQUAL(e.sites[1].slot, 9u);
-  BOOST_CHECK_EQUAL(std::memcmp(e.bytes.data(), &c, sizeof(c)), 0);
-}
-BOOST_AUTO_TEST_CASE(patch) {
-  two_arrays c{};
-  c.x.address = sentinel(2, 0);
-  c.y.address = sentinel(1, 1);
-  c.k = 5;
-  const closure_entry e = capture_closure(c);
-  const closure_entry before = e;
-  std::vector<slot_binding> by(2);
-  by[0].address = 0x1000;
-  by[0].extent[0] = 4;
-  by[0].extent[1] = 6;
-  by[1].address = 0x2000;
-  by[1].extent[0] = 9;
-  const auto out = patch_closure(e, by);
-  two_arrays p;
-  std::memcpy(&p, out.data(), sizeof(p));
-  BOOST_CHECK_EQUAL(p.x.address, 0x1000u);
-  BOOST_CHECK_EQUAL(p.x.extent[0], 4u);
-  BOOST_CHECK_EQUAL(p.x.extent[1], 6u);
-  BOOST_CHECK_EQUAL(p.y.address, 0x2000u);
-  BOOST_CHECK_EQUAL(p.y.extent[0], 9u);
-  BOOST_CHECK_EQUAL(p.k, 5);
-  BOOST_CHECK(e.bytes == before.bytes);
-  by.resize(1);
-  SG_CHECK_ERRC(patch_closure(e, by), internal);
-}
+
 BOOST_AUTO_TEST_SUITE_END()
