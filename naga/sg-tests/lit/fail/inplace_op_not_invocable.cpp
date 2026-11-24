@@ -4,4 +4,4 @@
 struct NoOp {};
 
 void use(sg::mem_handle<int> h) { auto s = sg::inplace(h, NoOp{}, 0); (void)s; }
-// CHECK: error: static assertion failed{{.*}}elements are at most 8 bytes
+// CHECK: error: static assertion failed{{.*}}sg::inplace

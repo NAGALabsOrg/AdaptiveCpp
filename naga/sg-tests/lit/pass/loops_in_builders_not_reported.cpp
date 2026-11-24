@@ -1,16 +1,23 @@
 // RUN: %acpp %s
 #include "hipSYCL/sg/sg.hpp"
 
-void build(sg::kernel_handle &kh) {
-  auto d = kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), [](sg::item<1> it) { return int(it.id()[0]); });
-  for (int k = 0; k < 4; ++k) {
-    auto m = kh.map_groups<sg::mapping::global>(d, [](sycl::id<1> g) { return sg::single<1>{g}; });
-    d = kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), m,
-                        [](sg::item<1> it, sg::group_iterator<int, 1, sg::mapping::global> a) {
-                          return a[0][sycl::id<1>(it.local_id()[0])] + 1;
-                        });
+void build(sg::kernel_handle &kh, sg::mem_handle<float> in, sg::mem_handle<float> out) {
+  auto step = [](float v) { return v + 1.f; };
+  auto x = kh.source(in, sg::shape<1>({64}));
+  auto items = kh.work_items({64});
+  auto y = kh.map_items(items, [=](auto item) {
+    auto v = x[item.id()];
+    return item.compute(v, step);
+  });
+  for (int k = 1; k < 4; ++k) {
+    auto prev = y.named("prev");
+    y = kh.map_items(items, [=](auto item) {
+      auto v = prev[item.id()];
+      return item.compute(v, step);
+    });
   }
   int i = 0;
   while (i < 3)
     ++i;
+  kh.evaluate(out, y);
 }

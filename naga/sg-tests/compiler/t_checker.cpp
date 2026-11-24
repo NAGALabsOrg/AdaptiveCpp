@@ -36,6 +36,7 @@ public:
 
 const char *prelude = R"(
 template <class C> [[clang::annotate("sg_body_entry")]] void entry(const C &c) { c(); }
+template <class C> [[clang::annotate("sg_body_entry")]] void entry_with(const C &c) { c(1); }
 )";
 
 class entry_collector : public clang::RecursiveASTVisitor<entry_collector> {
@@ -112,33 +113,45 @@ void expect_clean(const std::string &body, const std::string &decls = "") {
 BOOST_AUTO_TEST_SUITE(body_checker_suite)
 
 BOOST_AUTO_TEST_CASE(loops) {
-  expect_one("loop", "entry([] { for (int i = 0; i < 3; ++i) {} });");
-  expect_one("loop", "entry([] { int i = 0; while (i < 3) ++i; });");
-  expect_one("loop", "entry([] { int i = 0; do { ++i; } while (i < 3); });");
-  expect_one("loop", "entry([] { int a[3] = {1, 2, 3}; for (int x : a) { (void)x; } });");
+  expect_one("loop (for)", "entry([] { for (int i = 0; i < 3; ++i) {} });");
+  expect_one("loop (while)", "entry([] { int i = 0; while (i < 3) ++i; });");
+  expect_one("loop (do)", "entry([] { int i = 0; do { ++i; } while (i < 3); });");
+  expect_one("loop (range-for)", "entry([] { int a[3] = {1, 2, 3}; for (int x : a) { (void)x; } });");
 }
-BOOST_AUTO_TEST_CASE(loop_two_calls_deep_reports_chain) {
-  const auto d = run("entry([] { return outer(1); });",
-                     "int inner(int x) { for (int i = 0; i < x; ++i) {} return x; }\n"
-                     "int outer(int x) { return inner(x); }\n");
-  BOOST_CHECK_EQUAL(count_id(d, "loop"), 1u);
-  BOOST_CHECK_EQUAL(count_notes(d, "called from"), 2u);
-  // innermost first: the loop is in inner, called from outer, which the body calls
+BOOST_AUTO_TEST_CASE(a_loop_in_a_generic_device_function_is_found_in_its_instantiation) {
+  expect_one("loop (for)", "entry_with([](auto x) { for (int i = 0; i < x; ++i) {} return x; });");
+}
+BOOST_AUTO_TEST_CASE(the_error_names_the_function_it_is_in) {
+  const auto d = run("entry([] { return holder(1); });", "int holder(int x) { for (;;) {} return x; }\n");
+  bool named = false;
+  for (const auto &x : d)
+    if (x.level == clang::DiagnosticsEngine::Error && x.text.find("in 'holder'") != std::string::npos)
+      named = true;
+  BOOST_CHECK(named);
+}
+BOOST_AUTO_TEST_CASE(loop_two_calls_deep_reports_the_chain_of_three_functions) {
+  const auto d = run("entry([] { return one(1); });",
+                     "int three(int x) { for (int i = 0; i < x; ++i) {} return x; }\n"
+                     "int two(int x) { return three(x); }\n"
+                     "int one(int x) { return two(x); }\n");
+  BOOST_CHECK_EQUAL(count_id(d, "loop (for)"), 1u);
+  BOOST_CHECK_EQUAL(count_notes(d, "called from"), 3u);
   std::vector<std::string> notes;
   for (const auto &x : d)
     if (x.level == clang::DiagnosticsEngine::Note && x.text.rfind("called from", 0) == 0)
       notes.push_back(x.text);
-  BOOST_REQUIRE_EQUAL(notes.size(), 2u);
-  BOOST_CHECK(notes[0].find("outer") != std::string::npos);
-  BOOST_CHECK(notes[1].find("the body") != std::string::npos);
+  BOOST_REQUIRE_EQUAL(notes.size(), 3u);
+  BOOST_CHECK(notes[0].find("two") != std::string::npos);
+  BOOST_CHECK(notes[1].find("one") != std::string::npos);
+  BOOST_CHECK(notes[2].find("the body") != std::string::npos);
 }
 BOOST_AUTO_TEST_CASE(goto_stmt) {
   expect_one("goto", "entry([] { goto done; done: return; });");
 }
 BOOST_AUTO_TEST_CASE(recursion) {
-  expect_one("call-cycle", "entry([] { return fact(3); });",
+  expect_one("recursion", "entry([] { return fact(3); });",
              "int fact(int n) { return n ? n * fact(n - 1) : 1; }");
-  expect_one("call-cycle", "entry([] { return ping(3); });",
+  expect_one("recursion", "entry([] { return ping(3); });",
              "int pong(int n);\nint ping(int n) { return n ? pong(n - 1) : 0; }\n"
              "int pong(int n) { return n ? ping(n - 1) : 0; }");
 }
@@ -148,11 +161,11 @@ BOOST_AUTO_TEST_CASE(closures) {
   expect_one("ref-capture", "int k = 0; entry([&] { (void)k; });");
 }
 BOOST_AUTO_TEST_CASE(writes) {
-  expect_one("non-local-write", "entry([] { gval = 1; });", "int gval;");
-  expect_one("non-local-write", "int v = 0; int *p = &v; entry([p] { *p = 1; });");
-  expect_one("non-local-write", "entry([] { gval += 2; });", "int gval;");
-  expect_one("non-local-write", "entry([] { ++gval; });", "int gval;");
-  expect_one("non-local-write", "entry([] { gval++; });", "int gval;");
+  expect_one("write", "entry([] { gval = 1; });", "int gval;");
+  expect_one("write", "int v = 0; int *p = &v; entry([p] { *p = 1; });");
+  expect_one("write", "entry([] { gval += 2; });", "int gval;");
+  expect_one("write", "entry([] { ++gval; });", "int gval;");
+  expect_one("write", "entry([] { gval++; });", "int gval;");
 }
 BOOST_AUTO_TEST_CASE(static_variable) {
   expect_one("non-const-static", "entry([] { return gval; });", "int gval;");
@@ -168,8 +181,8 @@ BOOST_AUTO_TEST_CASE(no_body_virtual_pointer) {
 }
 BOOST_AUTO_TEST_CASE(two_offences_two_errors) {
   const auto d = run("entry([] { gval = 1; for (;;) {} });", "int gval;");
-  BOOST_CHECK(count_id(d, "non-local-write") >= 1);
-  BOOST_CHECK(count_id(d, "loop") >= 1);
+  BOOST_CHECK(count_id(d, "write") >= 1);
+  BOOST_CHECK(count_id(d, "loop (for)") >= 1);
   BOOST_CHECK(errors(d).size() >= 2);
 }
 BOOST_AUTO_TEST_CASE(exempt_and_skipped) {
@@ -192,8 +205,8 @@ BOOST_AUTO_TEST_CASE(no_entries_no_diagnostics) {
 BOOST_AUTO_TEST_CASE(entry_instantiated_twice_is_checked_once) {
   const auto once = run_with("entry([] { for (;;) {} });", "", 1);
   const auto twice = run_with("entry([] { for (;;) {} });", "", 2);
-  BOOST_CHECK_EQUAL(count_id(once, "loop"), 1u);
-  BOOST_CHECK_EQUAL(count_id(twice, "loop"), 1u);
+  BOOST_CHECK_EQUAL(count_id(once, "loop (for)"), 1u);
+  BOOST_CHECK_EQUAL(count_id(twice, "loop (for)"), 1u);
   BOOST_CHECK_EQUAL(errors(twice).size(), errors(once).size());
 }
 BOOST_AUTO_TEST_CASE(non_entry_is_not_a_body_entry) {

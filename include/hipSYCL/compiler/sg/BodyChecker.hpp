@@ -88,16 +88,16 @@ public:
     return clang::RecursiveASTVisitor<BodyWalker>::TraverseIfStmt(S);
   }
 
-  bool VisitForStmt(clang::ForStmt *S) { return loop(S->getForLoc()); }
-  bool VisitCXXForRangeStmt(clang::CXXForRangeStmt *S) { return loop(S->getForLoc()); }
-  bool VisitWhileStmt(clang::WhileStmt *S) { return loop(S->getWhileLoc()); }
-  bool VisitDoStmt(clang::DoStmt *S) { return loop(S->getDoLoc()); }
+  bool VisitForStmt(clang::ForStmt *S) { return loop(S->getForLoc(), "for"); }
+  bool VisitCXXForRangeStmt(clang::CXXForRangeStmt *S) { return loop(S->getForLoc(), "range-for"); }
+  bool VisitWhileStmt(clang::WhileStmt *S) { return loop(S->getWhileLoc(), "while"); }
+  bool VisitDoStmt(clang::DoStmt *S) { return loop(S->getDoLoc(), "do"); }
   bool VisitGotoStmt(clang::GotoStmt *S) {
-    error(S->getGotoLoc(), "goto", "goto is not allowed in a body");
+    error(S->getGotoLoc(), "goto", "goto is not allowed in a device function");
     return true;
   }
   bool VisitIndirectGotoStmt(clang::IndirectGotoStmt *S) {
-    error(S->getGotoLoc(), "goto", "goto is not allowed in a body");
+    error(S->getGotoLoc(), "goto", "goto is not allowed in a device function");
     return true;
   }
 
@@ -110,14 +110,14 @@ public:
 
   bool VisitBinaryOperator(clang::BinaryOperator *B) {
     if (B->isAssignmentOp() && !isLocal(B->getLHS()))
-      error(B->getOperatorLoc(), "non-local-write",
-            "a body cannot write to anything that is not local to it");
+      error(B->getOperatorLoc(), "write",
+            "a device function cannot write to anything that is not local to it");
     return true;
   }
   bool VisitUnaryOperator(clang::UnaryOperator *U) {
     if (U->isIncrementDecrementOp() && !isLocal(U->getSubExpr()))
-      error(U->getOperatorLoc(), "non-local-write",
-            "a body cannot write to anything that is not local to it");
+      error(U->getOperatorLoc(), "write",
+            "a device function cannot write to anything that is not local to it");
     return true;
   }
 
@@ -146,8 +146,8 @@ public:
     case clang::OO_PlusPlus:
     case clang::OO_MinusMinus:
       if (E->getNumArgs() > 0 && !isLocal(E->getArg(0)))
-        error(E->getOperatorLoc(), "non-local-write",
-              "a body cannot write to anything that is not local to it");
+        error(E->getOperatorLoc(), "write",
+              "a device function cannot write to anything that is not local to it");
       break;
     default:
       break;
@@ -214,8 +214,9 @@ private:
     return false;
   }
 
-  bool loop(clang::SourceLocation L) {
-    error(L, "loop", "loops are not allowed in a body or in anything it calls");
+  bool loop(clang::SourceLocation L, const char *Kind) {
+    error(L, std::string("loop (") + Kind + ")",
+          "loops are not allowed in a device function or in anything it calls");
     return true;
   }
 
@@ -246,7 +247,7 @@ private:
     }
     for (const Frame &Fr : Stack)
       if (Fr.Fn->getCanonicalDecl() == Def->getCanonicalDecl()) {
-        error(Loc, "call-cycle", "a body cannot call a function that calls itself");
+        error(Loc, "recursion", "a device function cannot call a function that calls itself");
         return;
       }
     if (!Done.insert(Def->getCanonicalDecl()).second)
@@ -256,8 +257,10 @@ private:
     Stack.pop_back();
   }
 
-  void error(clang::SourceLocation L, const char *Id, const std::string &Text) {
-    D.Report(L, ErrId) << Id << Text;
+  void error(clang::SourceLocation L, const std::string &Id, const std::string &Text) {
+    const clang::FunctionDecl *In = Stack.back().Fn;
+    const std::string Where = Stack.size() == 1 ? std::string("the body") : In->getQualifiedNameAsString();
+    D.Report(L, ErrId) << Id << (Text + " (in '" + Where + "')");
     D.Report(BodyLoc, NoteBody);
     for (size_t I = Stack.size(); I-- > 1;) {
       const Frame &Fr = Stack[I];
@@ -282,16 +285,33 @@ inline const clang::CXXRecordDecl *entryClosureType(const clang::FunctionDecl *F
   return Args->get(0).getAsType()->getAsCXXRecordDecl();
 }
 
-inline const clang::CXXMethodDecl *callOperator(const clang::CXXRecordDecl *R) {
+// Every defined call operator of the closure: the operator of a plain lambda or
+// functor, or each instantiation of a generic one.
+inline std::vector<const clang::CXXMethodDecl *> callOperators(const clang::CXXRecordDecl *R) {
+  std::vector<const clang::CXXMethodDecl *> Out;
   if (!R->hasDefinition())
-    return nullptr;
-  if (R->isLambda())
-    return R->getLambdaCallOperator();
-  for (const clang::NamedDecl *ND : R->lookup(
-           R->getASTContext().DeclarationNames.getCXXOperatorName(clang::OO_Call)))
-    if (auto *M = llvm::dyn_cast<clang::CXXMethodDecl>(ND->getUnderlyingDecl()))
-      return M;
-  return nullptr;
+    return Out;
+  auto addSpecializations = [&](const clang::FunctionTemplateDecl *FT) {
+    for (const clang::FunctionDecl *Spec : FT->specializations())
+      if (auto *M = llvm::dyn_cast<clang::CXXMethodDecl>(Spec))
+        Out.push_back(M);
+  };
+  if (R->isLambda()) {
+    if (const clang::FunctionTemplateDecl *FT = R->getDependentLambdaCallOperator())
+      addSpecializations(FT);
+    else if (const clang::CXXMethodDecl *M = R->getLambdaCallOperator())
+      Out.push_back(M);
+    return Out;
+  }
+  for (const clang::NamedDecl *ND :
+       R->lookup(R->getASTContext().DeclarationNames.getCXXOperatorName(clang::OO_Call))) {
+    const clang::NamedDecl *U = ND->getUnderlyingDecl();
+    if (auto *FT = llvm::dyn_cast<clang::FunctionTemplateDecl>(U))
+      addSpecializations(FT);
+    else if (auto *M = llvm::dyn_cast<clang::CXXMethodDecl>(U))
+      Out.push_back(M);
+  }
+  return Out;
 }
 
 } // namespace detail
@@ -316,32 +336,35 @@ inline void check_entries(clang::ASTContext &Ctx, clang::DiagnosticsEngine &Diag
     const clang::CXXRecordDecl *R = detail::entryClosureType(Entry);
     if (!R)
       continue;
-    const clang::CXXMethodDecl *Op = detail::callOperator(R);
-    if (!Op)
-      continue;
-    const clang::FunctionDecl *Def = nullptr;
-    if (!Op->hasBody(Def))
-      continue;
-    if (!Checked.insert(Def->getCanonicalDecl()).second)
-      continue;
-    clang::SourceLocation BodyLoc = R->getLocation();
     unsigned ErrId = Diags.getCustomDiagID(clang::DiagnosticsEngine::Error, "sg: %0: %1");
     unsigned NoteBody =
         Diags.getCustomDiagID(clang::DiagnosticsEngine::Note, "in the body defined here");
-    if (!Op->isConst()) {
-      Diags.Report(Op->getLocation(), ErrId)
-          << "mutable-closure" << "a body must not be a mutable lambda";
-      Diags.Report(BodyLoc, NoteBody);
-    }
-    if (R->isLambda())
-      for (const clang::LambdaCapture &C : R->captures())
-        if (C.getCaptureKind() == clang::LCK_ByRef) {
-          Diags.Report(C.getLocation(), ErrId)
-              << "ref-capture" << "a body cannot capture by reference";
+    clang::SourceLocation BodyLoc = R->getLocation();
+    bool ClosureChecked = false;
+    for (const clang::CXXMethodDecl *Op : detail::callOperators(R)) {
+      const clang::FunctionDecl *Def = nullptr;
+      if (!Op->hasBody(Def))
+        continue;
+      if (!Checked.insert(Def->getCanonicalDecl()).second)
+        continue;
+      if (!ClosureChecked) {
+        ClosureChecked = true;
+        if (!Op->isConst()) {
+          Diags.Report(Op->getLocation(), ErrId)
+              << "mutable-closure" << "a device function must not be a mutable lambda";
           Diags.Report(BodyLoc, NoteBody);
         }
-    detail::BodyWalker W(Ctx, Diags, BodyLoc, Def);
-    W.run(Def);
+        if (R->isLambda())
+          for (const clang::LambdaCapture &C : R->captures())
+            if (C.getCaptureKind() == clang::LCK_ByRef) {
+              Diags.Report(C.getLocation(), ErrId)
+                  << "ref-capture" << "a device function cannot capture by reference";
+              Diags.Report(BodyLoc, NoteBody);
+            }
+      }
+      detail::BodyWalker W(Ctx, Diags, BodyLoc, Def);
+      W.run(Def);
+    }
   }
 }
 

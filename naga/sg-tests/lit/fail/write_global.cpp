@@ -3,11 +3,16 @@
 
 int counter;
 
-void build(sg::kernel_handle &kh) {
-  kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), [](sg::item<1> it) {
-    counter = 1;
-    return int(it.id()[0]);
+void build(sg::kernel_handle &kh, sg::mem_handle<int> in) {
+  auto x = kh.source(in, sg::shape<1>({8}));
+  auto items = kh.work_items({8});
+  kh.map_items(items, [=](auto item) {
+    auto v = x[item.id()];
+    return item.compute(v, [](int a) {
+      counter = 1;
+      return a;
+    });
   });
 }
-// CHECK: error: sg: non-local-write:
+// CHECK: error: sg: write:
 // CHECK: note: in the body defined here

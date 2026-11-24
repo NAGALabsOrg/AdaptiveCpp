@@ -1,19 +1,26 @@
 // RUN: not %acpp %s 2>&1 | FileCheck %s
 #include "hipSYCL/sg/sg.hpp"
 
-int inner(int x) {
+int three(int x) {
   int acc = 0;
   for (int i = 0; i < x; ++i)
     acc += i;
   return acc;
 }
-int outer(int x) { return inner(x); }
+int two(int x) { return three(x); }
+int one(int x) { return two(x); }
 
-void build(sg::kernel_handle &kh) {
-  kh.parallel_for(sycl::range<1>(8), sycl::range<1>(4), [](sg::item<1> it) { return outer(int(it.id()[0])); });
+void build(sg::kernel_handle &kh, sg::mem_handle<int> in) {
+  auto x = kh.source(in, sg::shape<1>({8}));
+  auto items = kh.work_items({8});
+  kh.map_items(items, [=](auto item) {
+    auto v = x[item.id()];
+    return item.compute(v, [](int a) { return one(a); });
+  });
 }
-// CHECK: error: sg: loop:
+// CHECK: error: sg: loop (for):{{.*}}in 'three'
 // CHECK: note: in the body defined here
-// CHECK: note: called from 'outer' here
+// CHECK: note: called from 'two' here
+// CHECK: note: called from 'one' here
 // CHECK: note: called from 'the body' here
 // CHECK-NOT: __sg_
